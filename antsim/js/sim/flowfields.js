@@ -16,6 +16,8 @@
 
 
 
+import { NEST_CELL, CHAMBER } from './nest.js';
+
 export const UNREACHABLE = 0xffff;
 
 export class FlowField {
@@ -111,45 +113,102 @@ export class FlowField {
 }
 
 /**
- * Haelt die Felder einer Nest-Ebene und aktualisiert sie verteilt.
- * Felder: 'entrance' (alle Portale dieser Ebene) und 'dig' (aktive Baustelle).
+ * Haelt alle Distanzfelder einer Nest-Ebene und aktualisiert sie verteilt.
+ *
+ *   entrance – zu den Portalen dieser Ebene   (Ausrueckweg, Heimweg)
+ *   dig      – zur aktiven Baustelle           (Graben)
+ *   store    – zu den Vorratskammern           (Nahrung abliefern)
+ *   brood    – zu den Brutkammern              (Brutpflege)
+ *
+ * Felder werden nur neu gerechnet, wenn sich die Luftzellen geaendert haben
+ * (level.airVersion) oder das Ziel gewechselt hat. Das Budget teilen sich
+ * ALLE Ebenen, damit acht grabende Kolonien nicht acht Breitensuchen pro
+ * Tick ausloesen.
  */
 export class FieldSet {
   constructor(level) {
     this.level = level;
     this.entrance = new FlowField(level);
     this.dig = new FlowField(level);
-    this.pending = [];
+    this.store = new FlowField(level);
+    this.brood = new FlowField(level);
+    this._goals = [];
   }
 
-  /** Zielzellen des Eingangsfelds: die Portalzellen dieser Ebene. */
+  markAllDirty() {
+    this.entrance.valid = false; this.entrance.airVersion = -1;
+    this.dig.valid = false; this.dig.airVersion = -1;
+    this.store.valid = false; this.store.airVersion = -1;
+    this.brood.valid = false; this.brood.airVersion = -1;
+  }
+
   markEntranceDirty() { this.entrance.valid = false; this.entrance.airVersion = -1; }
   markDigDirty() { this.dig.valid = false; this.dig.airVersion = -1; }
 
   /**
-   * Beide Felder auf Stand bringen. Das Budget wird ueber ALLE Ebenen
-   * geteilt, damit acht grabende Kolonien nicht acht Breitensuchen pro Tick
-   * ausloesen.
-   * @param {number[]} entranceGoals
-   * @param {number[]} digGoals
-   * @param {string} digKey Kennung der aktuellen Baustelle
+   * Alle Felder auf Stand bringen.
+   * @param {object} colony
+   * @param {import('./portals.js').PortalSystem} portals
    * @param {{left:number}} budget gemeinsames Restbudget des Ticks
    */
-  update(entranceGoals, digGoals, digKey, budget) {
-    const av = this.level.airVersion;
+  update(colony, portals, budget) {
+    const level = this.level;
+    const av = level.airVersion;
 
     if (budget.left > 0 && (this.entrance.airVersion !== av || !this.entrance.valid)) {
-      this.entrance.compute(this.level, entranceGoals);
+      const g = this._goals;
+      g.length = 0;
+      for (const p of portals.ofColony(colony.id)) {
+        const pos = p.on(level.id);
+        if (pos) g.push(pos.y * level.w + pos.x);
+      }
+      this.entrance.compute(level, g);
       this.entrance.airVersion = av;
       budget.left--;
     }
+
+    const digKey = colony.digKey || '';
     if (budget.left > 0 && (this.dig.airVersion !== av || this.dig.goalKey !== digKey || !this.dig.valid)) {
-      this.dig.compute(this.level, digGoals);
+      this.dig.compute(level, colony.digGoals || []);
       this.dig.airVersion = av;
       this.dig.goalKey = digKey;
       budget.left--;
     }
+
+    if (budget.left > 0 && (this.store.airVersion !== av || !this.store.valid)) {
+      this.store.compute(level, chamberGoals(level, CHAMBER.STORE, this._goals));
+      this.store.airVersion = av;
+      budget.left--;
+    }
+
+    if (budget.left > 0 && (this.brood.airVersion !== av || !this.brood.valid)) {
+      this.brood.compute(level, chamberGoals(level, CHAMBER.BROOD, this._goals));
+      this.brood.airVersion = av;
+      budget.left--;
+    }
   }
+}
+
+/**
+ * Zellindizes aller Kammern eines Typs. Gibt es davon keine, wird auf die
+ * Koeniginnenkammer und notfalls auf alle Kammern ausgewichen – eine junge
+ * Kolonie hat noch keine Vorrats- oder Brutkammer.
+ */
+function chamberGoals(level, type, out) {
+  out.length = 0;
+  const cells = level.cells, meta = level.meta;
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i] === NEST_CELL.CHAMBER && meta[i] === type) out.push(i);
+  }
+  if (out.length) return out;
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i] === NEST_CELL.CHAMBER && meta[i] === CHAMBER.QUEEN) out.push(i);
+  }
+  if (out.length) return out;
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i] === NEST_CELL.CHAMBER) out.push(i);
+  }
+  return out;
 }
 
 const now = (typeof performance !== 'undefined' && performance.now)

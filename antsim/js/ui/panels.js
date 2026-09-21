@@ -10,6 +10,7 @@
  */
 
 import { CASTE_DEFS } from '../sim/castes.js';
+import { NUTRIENT_NAMES, NUTRIENT_COLORS } from '../config.js';
 
 export class ColonyPanel {
   constructor(el, world, sprites, game) {
@@ -22,7 +23,9 @@ export class ColonyPanel {
 
   refresh() {
     const sig = this.world.colonies.colonies
-      .map((c) => c.id + ':' + c.total + ':' + [...c.populationByLevel.entries()].join(',') + ':' + c.threat)
+      .map((c) => c.id + ':' + c.total + ':' + c.broodTotal + ':' + (c.alive ? 1 : 0)
+        + ':' + [...c.populationByLevel.entries()].join(',') + ':' + c.threat
+        + ':' + (c.balanceArr ? Array.from(c.balanceArr).map((v) => v.toFixed(1)).join('') : ''))
       .join('|');
     if (sig === this.signature) return;
     this.signature = sig;
@@ -36,8 +39,8 @@ export class ColonyPanel {
       head.className = 'colony-head';
       head.title = 'In die Nest-Ebene wechseln';
       head.innerHTML = '<span class="swatch" style="background:' + c.colorCss + '"></span>'
-        + '<span class="cname">' + esc(c.name) + '</span>'
-        + '<span class="cpop">' + c.total + '</span>';
+        + '<span class="cname">' + esc(c.name) + (c.alive ? '' : ' (tot)') + '</span>'
+        + '<span class="cpop">' + c.total + (c.broodTotal ? ' +' + c.broodTotal : '') + '</span>';
       head.addEventListener('click', () => {
         if (c.nestLevelIds.length) this.game.gotoLevel(c.nestLevelIds[0]);
       });
@@ -56,6 +59,57 @@ export class ColonyPanel {
         castes.appendChild(chip);
       }
       box.appendChild(castes);
+
+      // Naehrstoffbalken: rot Mangel, gruen gedeckt, blau Ueberschuss
+      if (c.balanceArr) {
+        const nut = document.createElement('div');
+        nut.className = 'nut';
+        for (let n = 0; n < 3; n++) {
+          const b = c.balanceArr[n];
+          const label = document.createElement('span');
+          label.className = 'nut-label';
+          label.textContent = NUTRIENT_NAMES[n];
+          const track = document.createElement('span');
+          track.className = 'nut-track';
+          const fill = document.createElement('span');
+          fill.className = 'nut-fill';
+          // 0..2 auf 0..100 %; die Marke bei 50 % ist "gedeckt"
+          fill.style.width = Math.max(2, Math.min(100, (b / 2) * 100)) + '%';
+          fill.style.background = b < 0.85 ? '#d9604a' : (b > 1.35 ? '#4f9ad8' : '#6ec177');
+          const mark = document.createElement('span');
+          mark.className = 'nut-mark';
+          track.appendChild(fill);
+          track.appendChild(mark);
+          track.title = NUTRIENT_NAMES[n] + ': Bilanz ' + b.toFixed(2)
+            + ' (Vorrat ' + Math.round(c.storeArr[n]) + '/' + Math.round(c.capacity[n]) + ')';
+          const val = document.createElement('span');
+          val.className = 'nut-val';
+          val.textContent = Math.round(c.storeArr[n]);
+          val.style.color = '#' + NUTRIENT_COLORS[n].toString(16).padStart(6, '0');
+          nut.appendChild(label);
+          nut.appendChild(track);
+          nut.appendChild(val);
+        }
+        box.appendChild(nut);
+
+        const stress = document.createElement('div');
+        stress.className = 'bars stress-bar';
+        const sl = document.createElement('span');
+        sl.className = 'bar-label';
+        sl.textContent = 'Stress';
+        const st = document.createElement('span');
+        st.className = 'bar-track';
+        const sf = document.createElement('span');
+        sf.className = 'bar-fill';
+        sf.style.width = Math.min(100, (c.stress / 2.5) * 100) + '%';
+        sf.style.background = c.stress > 1.2 ? '#d9604a' : '#d9a441';
+        st.appendChild(sf);
+        st.title = 'Stress ' + c.stress.toFixed(2)
+          + ' – treibt die Mutationsstaerke der naechsten Generation';
+        stress.appendChild(sl);
+        stress.appendChild(st);
+        box.appendChild(stress);
+      }
 
       // Verteilung auf die Ebenen
       const bars = document.createElement('div');

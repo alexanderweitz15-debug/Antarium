@@ -26,6 +26,8 @@ import { Hud } from './ui/hud.js';
 import { Inspector } from './ui/inspector.js';
 import { ColonyPanel } from './ui/panels.js';
 import { Toolbar } from './ui/toolbar.js';
+import { ResearchPanel } from './ui/research.js';
+import { StatsPanel } from './ui/stats.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -85,7 +87,12 @@ async function boot() {
     legend: true,
     help: false,
     debug: false,
+    research: false,
+    stats: false,
+    phero: [false, false, false],
   };
+  /** Restliche Ticks eines Schnelldurchlaufs (Forschungsmenue). */
+  let fastForwardLeft = 0;
 
   // --- Fassade fuer die UI-Module ------------------------------------------
   const game = {
@@ -117,7 +124,33 @@ async function boot() {
       if (which === 'legend') { state.legend = !state.legend; $('panel-legend').hidden = !state.legend; }
       if (which === 'help') { state.help = !state.help; $('help').hidden = !state.help; }
       if (which === 'debug') { state.debug = !state.debug; $('debugmenu').hidden = !state.debug; }
+      if (which === 'research') {
+        state.research = !state.research;
+        $('panel-research').hidden = !state.research;
+        if (state.research) research.refresh(true);
+      }
+      if (which === 'stats') {
+        state.stats = !state.stats;
+        $('panel-stats').hidden = !state.stats;
+        if (state.stats) { stats.timer = 0; stats.refresh(0); }
+      }
       hud.update(state);
+    },
+    /** Pheromon-Overlay: Typ ein-/ausschalten. */
+    togglePhero(type) {
+      state.phero[type] = !state.phero[type];
+      renderer.setPheroView({
+        enabled: state.phero.some(Boolean),
+        types: state.phero,
+        colonyId: -1,
+      });
+      hud.update(state);
+    },
+    /** Schnelldurchlauf: Ticks ohne Bild rechnen, verteilt ueber Frames. */
+    fastForward(ticks) {
+      fastForwardLeft = ticks;
+      bus.logEvent(CAT.SYS, 'Schnelldurchlauf: ' + Math.round(ticks / SIM.TICK_RATE) + ' s Spielzeit',
+        { tick: world.tick });
     },
     clearSelection() { inspector.clear(); },
     /** Ebenenwechsel mit Uebergang. focus = Zelle, auf die die Kamera zielt. */
@@ -223,10 +256,15 @@ async function boot() {
   const inspector = new Inspector($('tip'), $('inspector'), $('inspector-body'), world, sprites);
   const colonyPanel = new ColonyPanel($('colonies'), world, sprites, game);
   const toolbar = new Toolbar($('tools'), world, sprites, game);
+  const research = new ResearchPanel($('research'), world, game, sprites);
+  const stats = new StatsPanel($('stats'), world, game, sprites);
   const hud = new Hud({
     speed: $('speed'), step: $('btn-step'), grid: $('btn-grid'), trans: $('btn-trans'),
     legendBtn: $('btn-legend'), help: $('btn-help'), helpPanel: $('help'),
     seed: $('seedbox'), debug: $('debugmenu'), inspClose: $('insp-close'),
+    research: $('btn-research'), stats: $('btn-stats'),
+    researchClose: $('research-close'), statsClose: $('stats-close'),
+    pheroGroup: $('phero-group'),
   }, game);
   levelNav.rebuild(world);
   levelNav.update(world);
@@ -355,6 +393,9 @@ async function boot() {
         game.gotoSurface();
         break;
       case 'KeyV': toolbar.setTool('select'); break;
+      case 'KeyR': game.togglePanel('research'); break;
+      case 'KeyT': game.togglePanel('stats'); break;
+      case 'KeyP': game.togglePhero(1); break;
       case 'BracketLeft': toolbar.setBrush(toolbar.brush - 2); break;
       case 'BracketRight': toolbar.setBrush(toolbar.brush + 2); break;
       case 'Period': game.step(); break;
@@ -383,10 +424,17 @@ async function boot() {
   window.addEventListener('keyup', (e) => keys.delete(e.code));
   window.addEventListener('blur', () => keys.clear());
 
+  /** Kopfzeile darf umbrechen; die Panels ruecken entsprechend nach. */
+  function syncBarHeight() {
+    const h = $('topbar').offsetHeight;
+    document.documentElement.style.setProperty('--barh', h + 'px');
+  }
   window.addEventListener('resize', () => {
     renderer.resize(window.innerWidth, window.innerHeight);
+    syncBarHeight();
   });
   renderer.resize(window.innerWidth, window.innerHeight);
+  syncBarHeight();
 
   // --- Schleife ------------------------------------------------------------
   let accumulator = 0;
@@ -411,6 +459,27 @@ async function boot() {
     // Kamera und Uebergang laufen in Echtzeit, unabhaengig vom Simulationstempo.
     if (transition.active) transition.update(dt);
     else camera.applyKeys(keys, dt);
+
+    // Schnelldurchlauf des Forschungsmenues: moeglichst viele Ticks pro
+    // Frame, aber mit Zeitbudget, damit die Seite bedienbar bleibt.
+    if (fastForwardLeft > 0) {
+      const budgetEnd = performance.now() + 24;
+      let done = 0;
+      while (fastForwardLeft > 0 && performance.now() < budgetEnd) {
+        world.step();
+        fastForwardLeft--;
+        done++;
+      }
+      const ffEl = $('ff-overlay');
+      if (fastForwardLeft > 0) {
+        ffEl.hidden = false;
+        ffEl.textContent = 'Schnelldurchlauf … noch '
+          + Math.round(fastForwardLeft / SIM.TICK_RATE) + ' s Spielzeit';
+      } else {
+        ffEl.hidden = true;
+      }
+      void done;
+    }
 
     // Feste Ticks nachholen
     const speed = SIM.SPEEDS[state.speedIndex];
@@ -457,12 +526,15 @@ async function boot() {
       legend.refresh(world, camera.visibleCells(0));
       logView.render();
       inspector.refresh();
+      research.refresh();
+      stats.refresh(125);
       if (!pointer.down && pointer.moved) {
         updateCellUnderPointer();
         const level = world.levels.active;
         const w = camera.screenToWorld(pointer.x, pointer.y);
         const ant = world.ants.pick(level, w.x / WORLD.CELL_SIZE, w.y / WORLD.CELL_SIZE, 2.0);
-        inspector.hover(pointer.x, pointer.y, cellUnder, ant);
+        const creature = world.creatures.pick(level.id, w.x / WORLD.CELL_SIZE, w.y / WORLD.CELL_SIZE, 3.0);
+        inspector.hover(pointer.x, pointer.y, cellUnder, ant, creature);
       }
     }
   }

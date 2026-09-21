@@ -3,12 +3,16 @@
 2D-Sandbox-Insekten-OEkosystem im Browser. PixiJS v8 fuer das Rendering,
 Vanilla-ES6-Module fuer die Simulation, kein Build-Tool.
 
-**Stand: Phase 1 abgeschlossen** (Engine, Ebenen, Portale, Kamera, Sprites,
-Chunk-Terrain, Performance-Overlay, Legenden-Grundgeruest).
+**Stand: Phasen 1, 2, 3, 7 und 8 im Kern fertig.** Dazu vorgezogene Teile aus
+Phase 5 (mehrere Kolonien mit eigenen Nest-Ebenen) und Phase 9 (Sandbox-
+Werkzeuge, Kartenvorlagen, Forschungsmenue). Was noch fehlt, steht in
+Abschnitt 12.
 
-**Zusaetzlich vorgezogen** (auf ausdrueckliche Anforderung, siehe Abschnitt 12):
-Graben und Nestbau (aus Phase 3), mehrere Kolonien mit eigenen Nest-Ebenen
-(aus Phase 5), Sandbox-Werkzeuge und Kartenvorlagen (aus Phase 9).
+Kurz: Ameisen suchen ueber Pheromone Futter und bilden ohne jedes Scripting
+Ameisenstrassen, tragen Nahrung mit Naehrstoffprofilen ein, ziehen Brut auf,
+graben ihr Nest, werden von Spinnen, Ameisenloewen und Laufkaefern gejagt,
+schwaermen aus und gruenden Toechter mit mutiertem Genom. Die Ernaehrung
+bestimmt Phaenotyp und Mutationsstaerke.
 
 ---
 
@@ -31,10 +35,11 @@ HTTP). Seed waehlen: `?seed=meinSeed` an die URL haengen.
 ### Tests
 
 ```sh
-node test/sim-bench.mjs          # Simulation ohne Browser: Leistung, Determinismus, Nestbau
+node test/sim-bench.mjs          # 17 Pruefungen ohne Browser: Leistung, Determinismus,
+                                 # Nestbau, Futtersuche, Brut, Oekosystem, Evolution
 npm i -D playwright              # einmalig, fuer den Browsertest
 npx serve -l 8123 .              # in einem zweiten Terminal
-node test/browser-check.mjs      # 18 Abnahmepruefungen im echten Browser
+node test/browser-check.mjs      # 28 Abnahmepruefungen im echten Browser
 ```
 
 `test/sim-bench.mjs` laeuft ohne Browser, weil `js/sim/*` weder PixiJS noch
@@ -64,8 +69,14 @@ js/main.js                     Bootstrap, Spielschleife, Eingabe, Fassade
 
 js/sim/  (kennt WEDER PixiJS NOCH das DOM – laeuft auch headless unter Node)
   world.js        Weltaufbau + Tick-Orchestrierung (Zusatz zur Lastenheftliste)
-  construction.js Grabauftraege planen und abarbeiten (vorgezogen aus Phase 3)
+  construction.js Grabauftraege planen und abarbeiten
   flowfields.js   Distanzfelder fuer die Navigation im Nest
+  pheromones.js   Pheromonfelder der Oberflaeche (Heimweg, Nahrung, Alarm)
+  food.js         Nahrungsquellen, Naehrstoffprofile, Nachwachsen
+  nutrition.js    Bedarf, Bilanz, Phaenotyp, Stress
+  brood.js        Ei -> Larve -> Puppe -> Ameise
+  creatures.js    Raeuber und andere Kreaturen mit eigener kleiner Evolution
+  genome.js       Genom, Mutationsformeln, Kastenfreischaltung
   levels.js       Level, LevelManager, Chunk-Dirty-Verwaltung, Kamerazustand
   surface.js      Oberflaechen-Grid, Zelltyp-Tabelle, Generator, Eingangsbau
   nest.js         Nest-Grid, Zelltyp- und Kammertabelle, Generator, Grabfunktionen
@@ -89,6 +100,8 @@ js/render/
 js/ui/
   hud.js          Obere Leiste, Schalter, Debug-Menue, Hilfe
   toolbar.js      Spieler-Werkzeuge (ebenenabhaengig)
+  research.js     Forschungsmenue (Evolution im Zeitraffer, Genom-Editor)
+  stats.js        Stammbaum und Statistik
   swatch.js       Farbfelder fuer Legende und Werkzeugleiste
   levelNav.js     Ebenen-Reiter + Brotkrumen
   legend.js       Datengetriebene, kontextabhaengige Legende
@@ -98,11 +111,11 @@ js/ui/
   perf.js         Performance-Overlay (F3)
 ```
 
-Noch nicht vorhanden (kommt in der jeweiligen Phase): `pheromones.js`,
-`fluids.js`, `stability.js`, `food.js`, `nutrition.js`, `combat.js`,
-`genome.js`, `predators.js`, `interventions.js`, `minimap.js`, `pip.js`,
-`particles.js`, `save.js`, `stats.js`, `lineage.js`, `alerts.js`,
-`nutritionView.js`.
+Noch nicht vorhanden (kommt in der jeweiligen Phase): `fluids.js`,
+`stability.js`, `combat.js` (Kolonie gegen Kolonie), `interventions.js`,
+`minimap.js`, `pip.js`, `particles.js`, `save.js`, `lineage.js`,
+`alerts.js`, `nutritionView.js`. `predators.js` heisst hier
+`creatures.js`, weil nicht alle Arten Raeuber sind (Fliegen sind Beute).
 
 `js/sim/world.js` ist eine Ergaenzung zur Dateiliste des Lastenhefts: es
 haelt die Teile zusammen und macht die Simulation ohne Browser testbar
@@ -406,6 +419,171 @@ Sprite-Pools und UI-Bindungen zur Laufzeit.
 
 ---
 
+## 8c. Pheromone und Futtersuche (Phase 2)
+
+Auf der Oberflaeche traegt jede Kolonie drei Felder als `Uint8Array` ueber
+dem Grid: **Heimweg**, **Nahrung**, **Alarm**. Dazu kommt ein Feld, das je
+Zelle den dominanten Naehrstoff der dortigen Nahrungsspur merkt.
+
+**Warum die Gradienten stimmen.** Jede Ameise fuehrt einen Zaehler `trip`,
+der an zwei Stellen auf 0 gesetzt wird: beim Verlassen des Nests und beim
+Aufnehmen von Futter. Die Ablagemenge faellt mit diesem Zaehler ab.
+Dadurch ist die Heimweg-Spur nahe am Nest am staerksten und die
+Nahrungsspur nahe an der Fundstelle – ausrueckende Ameisen laufen den
+Nahrungs-Gradienten hinauf, heimkehrende den Heimweg-Gradienten. Niemand
+kennt einen Weg; die Strassen entstehen aus diesen zwei Regeln.
+
+**Bedarfsgewichtung.** Beim Abtasten der Nahrungsspur wird der Wert mit
+`colony.needWeight[naehrstoff]` multipliziert. Fehlt Protein, riechen
+Proteinspuren staerker. Das ist die Umsetzung von "Ameisen gewichten Spuren
+nach dem aktuellen Bedarf der Kolonie".
+
+**Verdunstung ohne Vollscan.** Ein Durchlauf ueber 160 000 Zellen je Feld
+und Kolonie waere zu teuer. Jedes Feld fuehrt deshalb eine Liste seiner
+Zellen mit Wert > 0; verdunstet wird nur ueber diese Liste, die dabei
+verdichtet wird. Eine Zelle kommt genau dann hinein, wenn sie von 0 auf
+> 0 steigt – Doppeleintraege sind damit ausgeschlossen, ganz ohne
+zusaetzliches Merkerarray. Diffusion wird nicht als eigener Durchlauf
+gerechnet: die Ablage verteilt sich ueber einen kleinen Kern auf die vier
+Nachbarzellen.
+
+Gemessen: rund 0.14 ms pro Tick bei acht Kolonien und 5000 Ameisen.
+
+---
+
+## 8d. Nahrung, Naehrstoffe und Lebenszyklus (Phase 3)
+
+**Nahrungsquellen** sind Oberflaechenzellen mit einem Nahrungstyp; der
+Restbestand steht in `level.meta` derselben Zelle. Damit braucht es keine
+zweite Datenstruktur, und die Helligkeit beim Zeichnen faellt automatisch
+mit dem Bestand. Ein Register je Ebene haelt die Indizes aller Quellen,
+damit Nachwachsen und Verderben nicht ueber das ganze Grid laufen.
+
+| Quelle | Zucker / Protein / Fett | waechst nach |
+|---|---|---|
+| Bluete (Nektar) | 95 / 3 / 2 | ja |
+| Blattlaeuse (Honigtau) | 90 / 8 / 2 | ja, schnell |
+| Fallobst | 70 / 5 / 25 | ja, verdirbt |
+| Samen | 15 / 25 / 60 | ja |
+| Aas | 10 / 70 / 20 | nein, verdirbt |
+| Zuckerwuerfel / Fleisch / Samenhaufen (Spieler) | 100 / 85 / 70 | nein |
+
+**Regionale Verteilung.** Ein grobes Rauschfeld teilt die Karte in zucker-,
+protein- und samenreiche Gegenden. Toechterkolonien landen in
+unterschiedlichen Gegenden – das ist die Grundlage dafuer, dass sich Linien
+auseinanderentwickeln.
+
+**Kreislauf.** Ameise findet Quelle -> nimmt `FOOD.PICKUP` Einheiten ->
+markiert die Fundstelle -> traegt die Fuhre durch das Portal -> laeuft ueber
+das Distanzfeld `store` in die Vorratskammer -> `storeFood()` bucht sie
+anteilig nach Profil auf die drei Naehrstoffe.
+
+**Lebenszyklus.** Die Koenigin legt Eier (Intervall aus Gen `eierrate` und
+Proteinbilanz). Ei -> Larve -> Puppe -> Ameise. Larven muessen von Ammen mit
+Protein gefuettert werden; ohne Futter kommen sie nicht weiter und sterben.
+Welche Kaste aus einer Larve wird, entscheidet `chooseCaste()` aus Genom,
+Proteinlage und Bedrohung. Erwachsene verbrauchen Zucker und sterben an
+Alter oder Hunger; Tote werden an der Oberflaeche zu Aas.
+
+**Deckungsgrad statt Hungersnot.** `colony.supply` ist der Anteil des
+gedeckten Bedarfs (0..1); der Hunger einer Ameise steigt anteilig zur
+Luecke. Frueher galt jede Unterdeckung als Hungersnot und liess das ganze
+Volk gleichzeitig sterben – jetzt schrumpft ein zu grosses Volk auf eine
+tragfaehige Groesse.
+
+**Phaenotyp (Schicht 1).** Beim Schluepfen wirken `colony.pheno.size`,
+`.speed` und `.life` aus der Ernaehrungslage: Proteinueberschuss macht
+groessere und staerkere Ameisen, Zuckerueberschuss schnellere mit kuerzerer
+Lebensdauer, Fettueberschuss langlebigere. Ein Ungleichgewicht ist
+schlechter als eine knappe, aber ausgewogene Ernaehrung (Strafterm ueber
+die Log-Verhaeltnisse der Bilanzen).
+
+---
+
+## 8e. Kreaturen (Phase 7)
+
+Eigene SoA-Tabelle, gleiche Bauweise wie die Ameisen.
+
+| Art | Rolle | Besonderheit |
+|---|---|---|
+| Fliege | Beute und Bestaeuber | harmlos, vermehrt sich stark, frisst an Bluete, Obst und Aas |
+| Radnetzspinne | Lauerjaeger | baut Netze zwischen Pflanzen und Steinen; Ameisen bleiben haengen |
+| Wolfsspinne | aktiver Jaeger | folgt Beute, geht durch Nesteingaenge |
+| Ameisenloewe | Lauerjaeger | graebt Trichter in Sand, die Ameisen Schaden zufuegen |
+| Laufkaefer | Jaeger und Graeber | graebt eigene Zugaenge ins Nest (zusaetzliches Portal) |
+
+**Die Bremse ist der Stoffwechsel.** Gejagt wird nur unterhalb von
+`CREATURES.HUNT_HUNGER` der Energiekapazitaet. Ein satter Raeuber laesst
+Ameisen in Ruhe; ein Riss deckt ungefaehr den Verbrauch bis zum naechsten.
+Dadurch toetet ein Raeuber nur so oft, wie er zum Leben braucht. Das war
+nicht die erste Fassung: zuerst biss jede Kreatur jeden Tick und einige
+Spinnen loeschten ein ganzes Volk in Sekunden aus.
+
+**Raeuber suchen KEINE Nester auf.** Ein Versuch, hungrige Jaeger zum
+naechsten Eingang zu lenken, endete damit, dass sich alle am Eingang
+sammelten und das Volk aufrieben. Jetzt streifen sie umher und begegnen
+Beute dort, wo Ameisenstrassen verlaufen – das verteilt sie von selbst.
+
+**Gegenwehr.** Ab `SWARM_COURAGE` Ameisen im Umkreis nimmt eine Kreatur
+Schaden; ab der doppelten Zahl flieht sie. Erlegte Raeuber sind eine grosse
+Proteinquelle – Jagd ist fuer die Kolonie ein Geschaeft.
+
+**Eigene Evolution.** Jede Kreatur hat drei Gene (Groesse, Tempo,
+Aggression), die bei der Fortpflanzung mutieren. Groessere Tiere werden
+auch groesser gezeichnet.
+
+---
+
+## 8f. Genom und Evolution (Phase 8)
+
+Das Genom gehoert der KOLONIE und aendert sich ausschliesslich bei der
+Gruendung einer neuen Kolonie. 20 Gene in vier Gruppen (Stoffwechsel,
+Koerper, Verhalten, Kaste), Werte 0..1.
+
+**Hochzeitsflug.** Ein grosses, gut ernaehrtes Volk schickt Gefluegelte los.
+Die Ernaehrungslage VOR dem Flug wird eingefroren (`flightSnapshot`) – sie
+bestimmt die Mutation. Die meisten Gefluegelten sterben
+(`EVO.FLIGHT_SURVIVAL`); wer lange genug ueberlebt und weit genug weg ist,
+gruendet eine Tochterkolonie.
+
+**Mutation.** Genau die Formeln aus dem Lastenheft, implementiert in
+`genome.js` (`sigmaFor`, `muFor`, `mutateGenome`) – siehe Abschnitt 10.
+Geprueft wird das in `test/sim-bench.mjs`: Proteinueberschuss macht
+Koerpergene messbar instabiler (0.124 gegen 0.073), Zuckerueberschuss die
+Stoffwechselgene (0.115 gegen 0.073), Stress vervielfacht die Streuung der
+Verhaltensgene.
+
+**Muetterlicher Effekt.** Toechter starten mit groesseren Reserven und
+erben die Haelfte des Phaenotyps der Mutter.
+
+**Evolutionaere Kasten.** `CASTE_UNLOCK` legt je Kaste Gen, Schwelle und
+Voraussetzungen fest. Liegt das Gen darueber und ist Protein da, kann die
+Kolonie die Kaste aufziehen. Im 50-Minuten-Lauf entstehen ohne jeden
+Eingriff regelmaessig sechs bis sieben der acht evolutionaeren Kasten.
+
+---
+
+## 8g. Forschungsmenue (Sandbox)
+
+Bewusst getrennt von den Werkzeugen: **Werkzeuge veraendern die Welt, das
+Forschungsmenue veraendert die Regeln.** Alle Regler wirken auf Parameter,
+die die Simulation ohnehin benutzt – niemand umgeht damit die Mechanik.
+
+| Regler | wirkt auf |
+|---|---|
+| Mutationsstaerke x0.5 … x10 | `EVO.MUTATION_SCALE` in `sigmaFor` und der Sprungwahrscheinlichkeit |
+| Hochzeitsfluege x0.5 … x20 | `EVO.FLIGHT_SCALE` (verkuerzt das Flugintervall) |
+| Ernaehrungseinfluss | `biasStaerke` in `muFor`: Realistisch = 0, Standard = 0.2, Stark = 0.6 |
+| Nahrungsnachwuchs 0 … x5 | `FOOD.REGROW_SCALE` |
+| Raeuberdichte 0 … x4 | `CREATURES.DENSITY_SCALE` (Populationsobergrenze je Art) |
+| Zeitraffer +1/+5/+15 min | rechnet Ticks ohne Bild, verteilt auf Frames mit 24 ms Budget |
+| Hochzeitsflug jetzt | loest sofort einen Schwarmflug aus |
+| Genom-Editor | 20 Schieberegler direkt auf `colony.genome` |
+| Kaste freischalten | hebt die noetigen Gene knapp ueber die Schwelle |
+| Mutationsprognose | `mutationForecast()`: Streuung je Gengruppe in Prozent |
+
+---
+
 ## 9. Wichtige Konstanten (`js/config.js`)
 
 | Gruppe | Wert | Bedeutung |
@@ -437,16 +615,27 @@ Sprite-Pools und UI-Bindungen zur Laufzeit.
 | `TOOLS.BRUSH_DEFAULT` | 3 | Pinselgroesse beim Start |
 | `TOOLS.SPAWN_ANTS` | 15 | Ameisen je Klick mit dem Spawn-Werkzeug |
 | `TOOLS.FOUND_ANTS` | 45 | Startvolk einer per Werkzeug gegruendeten Kolonie |
+| `FOOD.PICKUP` | 8 | Einheiten je Fuhre |
+| `PHERO.DEPOSIT_FALLOFF` | 900 | Ticks, ueber die die Ablage abfaellt |
+| `PHERO.DECAY_INTERVAL` | 6 | Ticks zwischen zwei Verdunstungsdurchlaeufen |
+| `NUTRITION.SUGAR_PER_ADULT` | 0.00035 | Zucker je Ameise und Tick |
+| `NUTRITION.BALANCE_WINDOW` | 1800 | Glaettungsfenster der Bilanz (3 Spieltage) |
+| `BROOD.LARVA_PROTEIN` | 7.5 | Protein, das eine Larve insgesamt braucht |
+| `BROOD.EGG_INTERVAL` | 90 | Ticks je Ei bei Gen 0.5 |
+| `LIFE.WORKER_LIFESPAN` | 30000 | Lebensdauer einer Arbeiterin (ca. 16 min) |
+| `CREATURES.HUNT_HUNGER` | 0.6 | Energieanteil, unter dem gejagt wird |
+| `CREATURES.ATTACK_COOLDOWN` | 45 | Ticks zwischen zwei Bissen |
+| `EVO.SIGMA_BASE` | 0.055 | Grundstreuung der Mutation |
+| `EVO.FLIGHT_MIN_POP` | 140 | Mindestvolk fuer einen Hochzeitsflug |
 
 Kastenwerte (`CASTE_STATS`) und Generatorparameter (`GEN`) liegen ebenfalls
 vollstaendig in `config.js`.
 
 ---
 
-## 10. Naehrstoff- und Mutationsformeln (Vertrag fuer Phase 3 und 8)
+## 10. Naehrstoff- und Mutationsformeln
 
-Noch nicht implementiert – hier festgehalten, damit die spaeteren Phasen
-nicht davon abweichen.
+Implementiert in `nutrition.js` und `genome.js`.
 
 **Bilanz.** `b_n = Aufnahme_n / Bedarf_n`, geglaettet ueber ein gleitendes
 Fenster (Standard 3 Spieltage). `b = 1` gedeckt, `< 1` Mangel, `> 1`
@@ -482,36 +671,36 @@ an Stress). `RNG.gauss()` steht dafuer bereits bereit.
 
 ## 11. Gemessene Performance
 
-Headless unter Node (reine Simulation, ohne Rendering), jeweils 1500 Ticks
-nach 300 Ticks Aufwaermen, inklusive laufendem Nestbau:
+Headless unter Node (reine Simulation, ohne Rendering), 1500 Ticks nach
+600 Ticks Aufwaermen, mit allen Systemen (Pheromone, Nahrung, Brut,
+Kreaturen, Nestbau):
 
-| Aufbau | Tick im Mittel | Spitze |
-|---|---|---|
-| 1 Kolonie, 5000 Ameisen, 2 Ebenen | **1.87 ms** | 3.73 ms |
-| 8 Kolonien, 5000 Ameisen, 9 Ebenen | **2.17 ms** | 6.63 ms |
+| Aufbau | Tick im Mittel | Spitze | Anteil am Tickbudget |
+|---|---|---|---|
+| Eingeschwungenes Oekosystem (724 Ameisen, 143 Tiere, 9 Ebenen) | **0.52 ms** | 1.16 ms | 1.5 % |
+| 8 Voelker, 5000 Ameisen, 9 Ebenen | **3.69 ms** | 7.94 ms | 11.1 % |
 
-Aufteilung im zweiten Fall: Buckets 0.34 ms, Bau + Distanzfelder 0.03 ms,
-Spatial Hash 0.07 ms, Ameisen 1.81 ms. Das entspricht rund 6.5 % eines Kerns
-bei 1x und 65 % bei 10x.
+Aufteilung im zweiten Fall: Ameisen 3.37 ms, Buckets 0.51 ms, Pheromone
+0.18 ms, Kolonie-KI 0.16 ms, Brut 0.10 ms, Kreaturen 0.05 ms, Distanzfelder
+0.02 ms.
 
-Im Browser (1280x720, 5000 Ameisen, ca. 2500 sichtbare Sprites):
-Simulation 2.1 ms, Sprite-Vorbereitung 0.7 ms, GPU-Aufruf 1.2 ms
-– zusammen rund **4 ms JavaScript pro Frame**.
+Im Browser (1600x900, eingeschwungenes Oekosystem): Simulation rund
+0.5 ms, Sprite-Vorbereitung 4.5 ms (enthaelt das Chunk-Neuzeichnen beim
+Start), GPU-Aufruf 0.2 ms, Pheromon-Overlay 0.9 ms alle sechs Frames.
 
-Chunk-Neuzeichnen: 0.77 ms (Oberflaeche) bzw. 1.24 ms (Nest) je 64x64-Chunk.
-Breitensuche eines Distanzfeldes: 0.25 ms.
+Weitere Einzelwerte: Chunk-Neuzeichnen 0.77 ms (Oberflaeche ohne Nahrung)
+bzw. 1.13 ms (mit Nahrung) und 1.24 ms (Nest) je 64x64-Chunk;
+Breitensuche eines Distanzfeldes 0.25 ms.
 
 **Einschraenkung:** Die Testumgebung hat keine GPU; Chromium rendert per
-SwiftShader in Software. Die dort gemessenen 5–40 FPS skalieren exakt
-umgekehrt zur Pixelzahl (320x240 -> 39.7 FPS, 640x480 -> 12.7 FPS,
-1280x720 -> 6.9 FPS) bei konstanter JavaScript-Zeit – klassisch
-fuellratenbegrenzt. Die 60-FPS-Anforderung auf echter Hardware ist damit
-**nicht gemessen**, sondern nur plausibel (4 ms JS von 16.7 ms Budget).
-Das muss auf einem echten Laptop nachgeprueft werden.
+SwiftShader in Software. Die dort gemessenen FPS skalieren exakt umgekehrt
+zur Pixelzahl bei konstanter JavaScript-Zeit – klassisch fuellratenbegrenzt.
+Die 60-FPS-Anforderung auf echter Hardware ist damit **nicht gemessen**,
+sondern nur plausibel. Das muss auf einem echten Laptop nachgeprueft werden.
 
-**Determinismus** wurde mit laufendem Nestbau geprueft: zwei Welten mit
-gleichem Seed haben nach 1500 Ticks identische Grids, Ameisenpositionen und
-Grabstatistiken.
+**Determinismus** wurde mit allen Systemen geprueft: zwei Welten mit
+gleichem Seed haben nach 2000 Ticks identische Grids, Ameisenzahlen,
+Kreaturenzahlen und Grabstatistiken.
 
 ---
 
@@ -520,78 +709,72 @@ Grabstatistiken.
 | Phase | Inhalt | Stand |
 |---|---|---|
 | 1 | Engine, Ebenen, Portal, Kamera, Sprites, Chunks, Overlay, Legende | **fertig** |
-| 2 | Pheromone, Sammeln, Ameisenstrassen, Stresstest | offen |
-| 3 | Nest, Graben, Lebenszyklus, Kolonie-KI, Naehrstoffe | **Graben und Kammern fertig**, Rest offen |
-| 4 | Navigation, Minimap, Bild-in-Bild, vollstaendige Legende | offen |
-| 5 | Krieg, Bedrohungsstufen, Raubzuege, Kinomodus | **mehrere Kolonien mit eigenen Nest-Ebenen fertig**, Kampf offen |
+| 2 | Pheromone, Sammeln, Ameisenstrassen, Stresstest | **fertig** |
+| 3 | Nest, Graben, Lebenszyklus, Kolonie-KI, Naehrstoffe | **fertig** |
+| 4 | Navigation, Minimap, Bild-in-Bild, Hover-Hervorhebung | offen |
+| 5 | Krieg, Bedrohungsstufen, Raubzuege, Kinomodus | mehrere Voelker mit eigenen Nest-Ebenen **fertig**, Kampf Kolonie gegen Kolonie offen |
 | 6 | Befestigungen, Stabilitaet, Einstuerze | offen |
-| 7 | Raeuber | offen |
-| 8 | Evolution, Genom, Mutation, Hochzeitsflug | offen |
-| 9 | Goettliche Eingriffe | **Terrain-, Ameisen- und Koloniewerkzeuge fertig**, Rest offen |
+| 7 | Raeuber, Netze, Trichter, Raeuber-Beute-Dynamik | **fertig** (Blattlaeuse verteidigen offen) |
+| 8 | Evolution, Genom, Mutation, Hochzeitsflug, Kasten | **fertig** (Stammbaum-Diagramm und Gen-Verlaufskurven offen) |
+| 9 | Goettliche Eingriffe | Terrain-, Nahrungs-, Kreaturen- und Koloniewerkzeuge sowie Forschungsmenue **fertig**, Katastrophen (Beben, Flut, Meteor) offen |
 | 10 | Tag/Nacht, Partikel, Sound, Speichern/Laden, Balancing | offen |
 
-### Abnahme Phase 1
+### Geprueft
 
-* Klick auf den Nesteingang wechselt fluessig in die Nest-Ebene und zurueck –
-  geprueft, inklusive Uebergang (Zoom + Blende, abschaltbar).
-* Kameraposition und Zoom bleiben pro Ebene exakt erhalten – geprueft ueber
-  Reiter, Tasten 0–8 und Esc.
-* Beide Ebenen werden jeden Tick simuliert, auch die unsichtbare – geprueft
-  (50 von 50 beobachteten Ameisen im Nest bewegen sich, waehrend die
-  Oberflaeche gezeigt wird).
+Headless (`test/sim-bench.mjs`, 17/17):
 
-### Zusaetzlich geprueft (vorgezogene Inhalte)
+* Gleicher Seed erzeugt identischen Verlauf – mit allen Systemen.
+* Die Kolonie erweitert ihr Nest ohne Eingriff, der Erdhuegel waechst mit.
+* Sammlerinnen tragen ein (674 Lieferungen in 5 Minuten), es entstehen
+  Ameisenstrassen (7566 aktive Pheromonzellen).
+* Die Koenigin legt Eier, Brut schluepft (110 Eier, 83 Ameisen).
+* Nach 50 Minuten: acht Voelker im Stammbaum, groesstes Volk 451 Ameisen,
+  keine Linie waechst unbegrenzt.
+* Ohne jeden Eingriff entstehen sechs evolutionaere Kasten.
+* Alle fuenf Kreaturenarten ueberleben (Fliege 99, Radnetzspinne 18,
+  Wolfsspinne 13, Ameisenloewe 11, Laufkaefer 9).
+* Proteinueberschuss macht Koerpergene messbar instabiler als
+  Zuckerueberschuss und umgekehrt; Stress vervielfacht die Streuung.
 
-* Terrain malen aendert Zellen und Chunks werden neu gezeichnet.
-* "Kolonie gruenden" erzeugt Volk, Nest-Ebene, Portal und Reiter in einem Zug.
-* Das Ameisen-Werkzeug setzt Einheiten der gewaehlten Kolonie und Kaste ab.
-* Die Werkzeugleiste wechselt beim Ebenenwechsel den Werkzeugsatz.
-* Ein von Hand markierter Bauauftrag mitten im Erdreich wird ueber einen
-  selbst gegrabenen Zugang tatsaechlich abgebaut.
-* Die Kolonie erweitert ihr Nest ohne Eingriff: 152 Zellen in 100 Sekunden,
-  dabei waechst der Erdhuegel an der Oberflaeche von 47 auf 130 Zellen und es
-  entstehen Brut-, Vorrats-, Wach- und Fluchtkammern.
-* Kartenvorlagen wirken (Geroellhang: 7309 Steinzellen statt rund 1500).
+Im Browser (`test/browser-check.mjs`, 28/28): Ebenenwechsel und gemerkte
+Kamera, kontextabhaengige Legende und Werkzeugleiste, Bauauftraege,
+Terrain malen, Kolonie gruenden, Ameisen absetzen, Nahrung ablegen,
+Kreaturen spawnen, Forschungsmenue mit Genom-Editor und Kastenfreischaltung,
+Hochzeitsflug, Schnelldurchlauf, Pheromon-Overlay, Brut, Stammbaum,
+Kartenvorlagen – alles ohne Konsolenfehler.
 
 ---
 
 ## 13. Bekannte Probleme und bewusste Vereinfachungen
 
 1. **60 FPS auf echter Hardware nicht gemessen** (siehe Abschnitt 11).
-2. **Das Verhalten an der Oberflaeche ist ein Platzhalter.** Dort wechseln
-   Ameisen zwischen Erkunden (Zufallslauf) und Heimkehren (Kurs auf das
-   naechste eigene Portal). Das erzeugt sichtbaren Portalverkehr, ist aber
-   bewusst keine emergente Futtersuche – Pheromone (Phase 2) ersetzen es
-   vollstaendig. Im Nest laeuft die Navigation dagegen schon ueber
-   Distanzfelder.
+2. **Kolonien sind einander noch gleichgueltig.** Fremde Ameisen kommen
+   nicht einmal in ein fremdes Nest (`PortalSystem.canEnter` verlangt die
+   eigene Kolonie). Das ist vorerst Absicht: ohne diese Sperre nahmen
+   Sammlerinnen im Nachbarnest Aufgaben an und fehlten dem eigenen Volk.
+   Mit Phase 5 kommt der Raubzug als ausdrueckliche Ausnahme (`raider`).
 3. **Kollision ist achsenweise und grob.** Bei Blockade dreht die Ameise um
-   0.7 rad. In 1–2 Zellen breiten Schaechten fuehrt das zu leichtem Zickzack.
-   Das Distanzfeld entschaerft es, beseitigt es aber nicht ganz.
-4. **Speicherbedarf der Chunk-Texturen** waechst mit der Zahl der Nest-Ebenen
-   (rund 1.9 MB je Nest, 10 MB Oberflaeche; bei 12 Nestern also ca. 33 MB
-   GPU-Speicher). Ab Phase 5 sollten Texturen nicht aktiver Ebenen verworfen
-   und beim Wechsel neu aufgebaut werden.
-5. **Ein Sprite je Ameise.** Bei 5000 sichtbaren Ameisen sind das 5000
-   `Sprite`-Objekte. Sie teilen sich eine Textur und damit einen Batch; falls
-   der Stresstest in Phase 2 es noetig macht, ist der Umstieg auf
-   `ParticleContainer` vorbereitet (ein Atlas, feste Ankerpunkte).
-6. **Der Himmelstreifen der Nest-Ebene ist fuer Einheiten undurchdringlich.**
-   Das ist Absicht (die Oberflaeche erreicht man nur ueber Portale), aber
-   technisch ein Sonderfall im `solidTable`.
-7. **Die Konsole meldet einen Netzfehler**, wenn das CDN nicht erreichbar ist,
-   bevor der Vendor-Fallback greift. Das laesst sich nicht vermeiden, ohne
-   den CDN-Pfad aufzugeben.
-8. **Keine Brut, keine Nahrung, keine Vorraete** – die Felder dafuer
-   existieren bereits in `Colony` und `Ants`, sind aber noch unbenutzt.
-   Kolonien wachsen deshalb nicht von selbst; Nachschub kommt nur ueber das
-   Ameisen-Werkzeug. Das kommt mit Phase 3.
-9. **Kolonien sind einander noch gleichgueltig.** Rote und blaue Ameisen
-   laufen durcheinander, ohne zu kaempfen. Das Kampfsystem ist Phase 5.
-10. **Die Kolonie graebt nur, solange sie Platz braucht.** Erreicht das Nest
-   `colony.total * DIG.CELLS_PER_ANT` Luftzellen, ruht der Bau. Ohne
-   Bevoelkerungswachstum (Phase 3) bleibt es dann dabei – mit dem Werkzeug
-   "Bauauftrag" oder mehr Ameisen geht es sofort weiter.
-11. **"Neue Welt" laedt die Seite neu.** Ein Neustart im laufenden Betrieb
-   muesste alle Chunk-Texturen, Sprite-Pools und UI-Bindungen abraeumen; der
-   Reload ist robuster. Der aktuelle Stand geht dabei verloren (Speichern
-   kommt in Phase 10).
+   0.7 rad. Das Distanzfeld entschaerft das im Nest, beseitigt es nicht.
+4. **Speicherbedarf.** Chunk-Texturen rund 1.9 MB je Nest-Ebene und 10 MB
+   fuer die Oberflaeche; Pheromonfelder rund 1 MB je Kolonie. Bei acht
+   Kolonien also etwa 45 MB. Ab Phase 5 sollten Texturen nicht aktiver
+   Ebenen verworfen werden.
+5. **Ein Sprite je Einheit.** Bei 5000 sichtbaren Ameisen sind das 5000
+   `Sprite`-Objekte, die sich aber eine Textur und damit einen Batch teilen.
+   Der Umstieg auf `ParticleContainer` ist vorbereitet.
+6. **Die Brutpflege ist ortsgebunden.** Ammen laufen ueber das Distanzfeld
+   in die Brutkammer und fuettern Larven im Umkreis von 7 Zellen. Liegen
+   Larven in weit auseinanderliegenden Kammern, werden die entlegenen
+   schlechter versorgt.
+7. **`findHungryLarva` durchsucht die gesamte Bruttabelle.** Bei viel Brut
+   und vielen Ammen ist das der teuerste Einzelposten der Brutpflege. Fuer
+   die gemessenen Groessen unkritisch; bei deutlich mehr Brut braucht es
+   einen Index je Kolonie.
+8. **Raeuber sind eine erste Fassung.** Netze und Trichter funktionieren,
+   aber Blattlaeuse werden noch nicht von Ameisen bewacht, und der
+   Laufkaefer-Zugang laesst sich noch nicht verschliessen (Phase 6).
+9. **Kein Speichern.** Ein Weltneustart laedt die Seite neu; der Stand geht
+   verloren (Phase 10).
+10. **Die Konsole meldet einen Netzfehler**, wenn das CDN nicht erreichbar
+    ist, bevor der Vendor-Fallback greift. Das laesst sich nicht vermeiden,
+    ohne den CDN-Pfad aufzugeben.

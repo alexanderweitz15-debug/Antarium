@@ -119,7 +119,10 @@ const tp = await page.evaluate((t) => {
 }, target);
 const qBefore = await page.evaluate(() => formicarium.world.colonies.get(0).digQueue.length);
 await page.evaluate(() => {
-  document.querySelectorAll('#tools .tool').forEach((b) => { if (b.textContent.includes('Bauauftrag')) b.click(); });
+  document.querySelectorAll('#tools .tool').forEach((b) => {
+    const label = b.querySelector('span:last-child');
+    if (label && label.textContent.trim() === 'Bauauftrag') b.click();
+  });
   formicarium.game.setSpeedIndex(0);
 });
 await page.mouse.click(tp.x, tp.y);
@@ -177,7 +180,11 @@ check('Kolonie gruenden erzeugt Volk, Nest-Ebene und Reiter',
 
 // --- 7. Ameisen-Werkzeug ---------------------------------------------------
 const antsBefore = await page.evaluate(() => {
-  document.querySelectorAll('#tools .tool').forEach((b) => { if (b.textContent.includes('Ameisen')) b.click(); });
+  // Genauer Treffer: "Ameisen" – nicht "Ameisenloewe"
+  document.querySelectorAll('#tools .tool').forEach((b) => {
+    const label = b.querySelector('span:last-child');
+    if (label && label.textContent.trim() === 'Ameisen') b.click();
+  });
   return formicarium.world.ants.count;
 });
 await page.mouse.click(520, 320);
@@ -205,7 +212,116 @@ check('Pause haelt die Simulation an', speed.paused === 0);
 check('Einzelschritt rechnet genau einen Tick', speed.step === 1);
 check('10x rechnet deutlich mehr Ticks', speed.fast > 120, speed.fast + ' Ticks in 1 s');
 
-// --- 9. Kartenvorlage ------------------------------------------------------
+// --- 9. Nahrung ablegen ----------------------------------------------------
+const foodBefore = await page.evaluate(() => {
+  const f = window.formicarium, p = f.world.portals.portals[0];
+  f.camera.focusCell(p.ax + 18, p.ay + 10, 4);
+  document.querySelectorAll('#tools .tool').forEach((b) => { if (b.textContent.includes('Zuckerw')) b.click(); });
+  return f.world.food.stats.sources;
+});
+await page.waitForTimeout(250);
+await page.mouse.click(760, 430);
+await page.waitForTimeout(1500);
+const foodAfter = await page.evaluate(() => {
+  const f = window.formicarium;
+  let n = 0;
+  const l = f.world.levels.surface;
+  for (let i = 0; i < l.cells.length; i++) if (l.cells[i] === 14) n++;
+  return n;
+});
+check('Nahrungs-Werkzeug legt Zuckerwuerfel ab', foodAfter > 0, foodAfter + ' Zellen');
+void foodBefore;
+
+// --- 10. Kreaturen spawnen -------------------------------------------------
+const crBefore = await page.evaluate(() => {
+  document.querySelectorAll('#tools .tool').forEach((b) => { if (b.textContent.includes('Wolfssp')) b.click(); });
+  return window.formicarium.world.creatures.count;
+});
+await page.waitForTimeout(250);
+await page.mouse.click(700, 500);
+await page.waitForTimeout(500);
+const crAfter = await page.evaluate(() => window.formicarium.world.creatures.count);
+check('Kreaturen-Werkzeug spawnt Tiere', crAfter > crBefore, (crAfter - crBefore) + ' Wolfsspinnen');
+
+// --- 11. Forschungsmenue ---------------------------------------------------
+await page.click('#btn-research');
+await page.waitForTimeout(600);
+const res = await page.evaluate(() => ({
+  offen: !document.getElementById('panel-research').hidden,
+  gene: document.querySelectorAll('#research .gene-slider').length,
+  kasten: document.querySelectorAll('#research .caste-row').length,
+}));
+check('Forschungsmenue oeffnet mit Genom-Editor und Kastenliste',
+  res.offen && res.gene === 20 && res.kasten === 8, res.gene + ' Gene, ' + res.kasten + ' Kasten');
+
+const geneBefore = await page.evaluate(() => window.formicarium.world.colonies.get(0).genome.koerpergroesse);
+await page.evaluate(() => {
+  const rows = [...document.querySelectorAll('#research .caste-row')];
+  const r = rows.find((x) => x.textContent.includes('Titanin'));
+  if (r) r.querySelector('button').click();
+});
+await page.waitForTimeout(400);
+const geneAfter = await page.evaluate(() => window.formicarium.world.colonies.get(0).genome.koerpergroesse);
+check('Kaste freischalten hebt das Gen ueber die Schwelle', geneAfter > geneBefore && geneAfter >= 0.78,
+  geneBefore.toFixed(2) + ' -> ' + geneAfter.toFixed(2));
+
+const alBefore = await page.evaluate(() => {
+  let n = 0; const a = window.formicarium.world.ants;
+  for (let i = 0; i < a.high; i++) if (a.alive[i] && a.caste[i] === 3) n++;
+  return n;
+});
+await page.evaluate(() => {
+  [...document.querySelectorAll('#research .btn')].find((b) => b.textContent === 'Hochzeitsflug jetzt')?.click();
+});
+await page.waitForTimeout(500);
+const alAfter = await page.evaluate(() => {
+  let n = 0; const a = window.formicarium.world.ants;
+  for (let i = 0; i < a.high; i++) if (a.alive[i] && a.caste[i] === 3) n++;
+  return n;
+});
+check('Hochzeitsflug laesst sich ausloesen', alAfter > alBefore, alBefore + ' -> ' + alAfter + ' Gefluegelte');
+
+const tickBefore = await page.evaluate(() => window.formicarium.world.tick);
+await page.evaluate(() => {
+  [...document.querySelectorAll('#research .btn')].find((b) => b.textContent === '+1 min')?.click();
+});
+await page.waitForTimeout(6000);
+const tickAfter = await page.evaluate(() => window.formicarium.world.tick);
+check('Schnelldurchlauf rechnet Ticks voraus', tickAfter - tickBefore > 1500,
+  (tickAfter - tickBefore) + ' Ticks in 6 s');
+await page.click('#btn-research');
+
+// --- 12. Pheromon-Overlay --------------------------------------------------
+await page.evaluate(() => { window.formicarium.game.togglePhero(1); });
+await page.waitForTimeout(800);
+const ph = await page.evaluate(() => ({
+  sichtbar: window.formicarium.renderer.pheroSprite && window.formicarium.renderer.pheroSprite.visible,
+  aktiv: window.formicarium.world.phero.stats.active,
+  ms: window.formicarium.renderer.stats.pheroMs,
+}));
+check('Pheromon-Overlay zeigt Ameisenstrassen', ph.sichtbar && ph.aktiv > 100,
+  ph.aktiv + ' aktive Zellen, ' + ph.ms.toFixed(2) + ' ms');
+await page.evaluate(() => { window.formicarium.game.togglePhero(1); });
+
+// --- 13. Brut und Lebenszyklus ---------------------------------------------
+const brood = await page.evaluate(() => ({
+  brut: window.formicarium.world.brood.count,
+  geschluepft: window.formicarium.world.colonies.get(0).hatched || 0,
+}));
+check('Brut existiert und schluepft', brood.brut > 0 || brood.geschluepft > 0,
+  brood.brut + ' Brut, ' + brood.geschluepft + ' geschluepft');
+
+// --- 14. Stammbaum ---------------------------------------------------------
+await page.click('#btn-stats');
+await page.waitForTimeout(800);
+const st = await page.evaluate(() => ({
+  offen: !document.getElementById('panel-stats').hidden,
+  zeilen: document.querySelectorAll('#stats .lin-row').length,
+}));
+check('Stammbaum zeigt alle Voelker', st.offen && st.zeilen >= 1, st.zeilen + ' Eintraege');
+await page.click('#btn-stats');
+
+// --- 15. Kartenvorlage -----------------------------------------------------
 await page.selectOption('#mapselect', 'geroell');
 await page.click('#btn-newworld');
 await page.waitForFunction(() => window.__booted === true, { timeout: 30000 });
@@ -213,9 +329,13 @@ await page.waitForTimeout(1200);
 const map = await page.evaluate(() => ({
   preset: formicarium.world.preset.key,
   stone: formicarium.world.levels.surface.cells.reduce((a, v) => a + (v === 2 ? 1 : 0), 0),
+  nahrung: formicarium.world.food.stats.sources,
+  tiere: formicarium.world.creatures.count,
 }));
 check('Kartenvorlage wird uebernommen', map.preset === 'geroell' && map.stone > 3000,
   map.preset + ', ' + map.stone + ' Steinzellen');
+check('Neue Welt hat Nahrung und Kreaturen', map.nahrung > 100 && map.tiere > 10,
+  map.nahrung + ' Quellen, ' + map.tiere + ' Tiere');
 
 console.log('\n' + results.join('\n'));
 // Netzfehler des CDN (Vendor-Fallback greift) sind kein Testfehler.

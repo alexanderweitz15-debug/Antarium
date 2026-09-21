@@ -17,12 +17,13 @@
  */
 
 import { PIXI } from './pixi.js';
-import { WORLD, RENDER } from '../config.js';
+import { WORLD, RENDER, PHERO } from '../config.js';
 import { LEVEL_KIND } from '../sim/levels.js';
 import { paintSurfaceChunk } from './surfaceView.js';
 import { paintNestChunk } from './nestView.js';
 import { CASTE_DEFS } from '../sim/castes.js';
 import { ANT_STATE } from '../sim/ants.js';
+import { SPECIES_LIST } from '../sim/creatures.js';
 
 export class Renderer {
   /**
@@ -42,15 +43,27 @@ export class Renderer {
     this.scratch = new Map();
 
     this.entityPool = [];
+    this.creaturePool = [];
+    this.broodPool = [];
     this.markerPool = [];
     this.selectSprite = null;
 
+    /** Pheromon-Overlay: Sichtbarkeit, Kolonie (-1 = alle), Typen. */
+    this.pheroView = { enabled: false, colonyId: -1, types: [true, true, true] };
+    this._pheroTimer = 0;
+
     /** Kennzahlen fuers Performance-Overlay. */
-    this.stats = { chunkUploads: 0, chunkUploadsTotal: 0, visibleAnts: 0, drawnMarkers: 0, paintMs: 0, frameMs: 0, drawMs: 0 };
+    this.stats = {
+      chunkUploads: 0, chunkUploadsTotal: 0, visibleAnts: 0, visibleCreatures: 0,
+      visibleBrood: 0, drawnMarkers: 0, paintMs: 0, frameMs: 0, drawMs: 0, pheroMs: 0,
+    };
     this.showChunkGrid = false;
 
     this._casteTex = [];
     this._casteScale = new Float32Array(CASTE_DEFS.length);
+    this._speciesTex = [];
+    this._speciesScale = new Float32Array(SPECIES_LIST.length);
+    this._broodTex = [];
     this._colonyColor = new Uint32Array(16).fill(0xffffff);
     this._vis = { x0: 0, y0: 0, x1: 0, y1: 0 };
   }
@@ -78,7 +91,11 @@ export class Renderer {
     this.entityRoot = new PIXI.Container();
     this.debugRoot = new PIXI.Container();
     this.hudRoot = new PIXI.Container();
-    this.worldRoot.addChild(this.terrainRoot, this.markerRoot, this.entityRoot, this.debugRoot);
+    this.pheroRoot = new PIXI.Container();
+    this.broodRoot = new PIXI.Container();
+    this.creatureRoot = new PIXI.Container();
+    this.worldRoot.addChild(this.terrainRoot, this.pheroRoot, this.markerRoot,
+      this.broodRoot, this.entityRoot, this.creatureRoot, this.debugRoot);
     stage.addChild(this.worldRoot, this.hudRoot);
 
     // Kastenbezogene Texturen und Groessen einmalig aufloesen.
@@ -98,6 +115,18 @@ export class Renderer {
     this.brushG.visible = false;
     this.worldRoot.addChild(this.brushG);
     this._brush = { x: -1, y: -1, r: -1, color: 0 };
+
+    for (const sp of SPECIES_LIST) {
+      const entry = this.sprites.get('creature_' + sp.key);
+      this._speciesTex[sp.id] = entry ? entry.textures : null;
+      // drawCreature normiert den Koerper auf 66 % der Zellbreite
+      this._speciesScale[sp.id] = (RENDER.ANT_CELLS * WORLD.CELL_SIZE) / (this.sprites.cell * 0.66)
+        * Math.pow(sp.size, RENDER.SIZE_EXPONENT);
+    }
+    for (const [k, key] of ['egg', 'larva', 'pupa'].entries()) {
+      const e = this.sprites.get('brood_' + key);
+      this._broodTex[k] = e ? e.textures[0] : null;
+    }
 
     this.selectSprite = new PIXI.Sprite(this.sprites.get('marker_select').textures[0]);
     this.selectSprite.anchor.set(0.5);
@@ -272,7 +301,10 @@ export class Renderer {
     );
 
     this.flushDirty(level, RENDER.CHUNK_UPLOADS_PER_FRAME);
+    this._updatePheroOverlay(level);
+    this._drawBrood(level);
     this._drawAnts(level, alpha);
+    this._drawCreatures(level, alpha);
     if (this.chunkGrid && this.chunkGrid.visible) {
       // Linienstaerke an den Zoom anpassen, damit sie duenn bleibt
       this.chunkGrid.scale.set(1);
@@ -332,6 +364,153 @@ export class Renderer {
     this.stats.visibleAnts = used;
   }
 
+  _drawCreatures(level, alpha) {
+    const cr = this.world.creatures;
+    const bucket = cr.buckets.get(level.id);
+    const pool = this.creaturePool;
+    const cs = WORLD.CELL_SIZE;
+    const vis = this._vis;
+    let used = 0;
+    if (bucket) {
+      for (let k = 0; k < bucket.count; k++) {
+        const i = bucket.ids[k];
+        const ax = cr.px[i] + (cr.x[i] - cr.px[i]) * alpha;
+        const ay = cr.py[i] + (cr.y[i] - cr.py[i]) * alpha;
+        if (ax < vis.x0 || ax > vis.x1 || ay < vis.y0 || ay > vis.y1) continue;
+        const textures = this._speciesTex[cr.species[i]];
+        if (!textures) continue;
+        let s = pool[used];
+        if (!s) {
+          s = new PIXI.Sprite();
+          s.anchor.set(0.5);
+          pool.push(s);
+          this.creatureRoot.addChild(s);
+        }
+        const frame = ((cr.anim[i] | 0) % textures.length + textures.length) % textures.length;
+        s.texture = textures[frame];
+        s.position.set(ax * cs, ay * cs);
+        s.rotation = cr.dir[i];
+        // Eigene Gene der Kreatur sind sichtbar: groessere Tiere sind groesser
+        s.scale.set(this._speciesScale[cr.species[i]] * (0.7 + cr.gSize[i] * 0.6));
+        s.tint = SPECIES_LIST[cr.species[i]].color;
+        s.visible = true;
+        used++;
+      }
+    }
+    for (let i = used; i < pool.length; i++) {
+      if (!pool[i].visible) break;
+      pool[i].visible = false;
+    }
+    this.stats.visibleCreatures = used;
+  }
+
+  _drawBrood(level) {
+    const br = this.world.brood;
+    const pool = this.broodPool;
+    const cs = WORLD.CELL_SIZE;
+    const vis = this._vis;
+    const scale = (0.9 * WORLD.CELL_SIZE) / this.sprites.cell;
+    let used = 0;
+    if (level.kind === LEVEL_KIND.NEST) {
+      for (let i = 0; i < br.high; i++) {
+        if (!br.alive[i] || br.level[i] !== level.id) continue;
+        const bx = br.x[i], by = br.y[i];
+        if (bx < vis.x0 || bx > vis.x1 || by < vis.y0 || by > vis.y1) continue;
+        const tex = this._broodTex[br.stage[i]];
+        if (!tex) continue;
+        let s = pool[used];
+        if (!s) {
+          s = new PIXI.Sprite();
+          s.anchor.set(0.5);
+          pool.push(s);
+          this.broodRoot.addChild(s);
+        }
+        s.texture = tex;
+        s.position.set(bx * cs, by * cs);
+        s.rotation = 0;
+        s.scale.set(scale * (br.stage[i] === 0 ? 0.8 : 1));
+        const colony = this.world.colonies.get(br.colony[i]);
+        s.tint = colony ? lighten(colony.color) : 0xffffff;
+        s.visible = true;
+        used++;
+      }
+    }
+    for (let i = used; i < pool.length; i++) {
+      if (!pool[i].visible) break;
+      pool[i].visible = false;
+    }
+    this.stats.visibleBrood = used;
+  }
+
+  /**
+   * Pheromon-Overlay: die Felder werden in eine Textur in Zellaufloesung
+   * geschrieben (ein Pixel je Zelle) und darueber gelegt. Aktualisiert wird
+   * nur alle paar Frames – das Bild aendert sich langsam.
+   */
+  _updatePheroOverlay(level) {
+    const pv = this.pheroView;
+    if (!pv.enabled || level.kind !== LEVEL_KIND.SURFACE || !this.world.phero) {
+      if (this.pheroSprite) this.pheroSprite.visible = false;
+      this.stats.pheroMs = 0;
+      return;
+    }
+    if (!this.pheroSprite) {
+      const canvas = document.createElement('canvas');
+      canvas.width = level.w;
+      canvas.height = level.h;
+      this.pheroCanvas = canvas;
+      this.pheroCtx = canvas.getContext('2d');
+      this.pheroImg = this.pheroCtx.createImageData(level.w, level.h);
+      this.pheroBuf = new Uint32Array(this.pheroImg.data.buffer);
+      const tex = PIXI.Texture.from(canvas);
+      tex.source.scaleMode = 'nearest';
+      this.pheroTexture = tex;
+      this.pheroSprite = new PIXI.Sprite(tex);
+      this.pheroSprite.scale.set(WORLD.CELL_SIZE);
+      this.pheroSprite.alpha = 0.75;
+      this.pheroRoot.addChild(this.pheroSprite);
+    }
+    this.pheroSprite.visible = true;
+    if (--this._pheroTimer > 0) return;
+    this._pheroTimer = 6;
+
+    const t0 = performance.now();
+    const buf = this.pheroBuf;
+    buf.fill(0);
+    const colors = PHERO.TYPE_COLORS;
+    for (const [cid, data] of this.world.phero.byColony) {
+      if (pv.colonyId >= 0 && cid !== pv.colonyId) continue;
+      for (let t = 0; t < PHERO.COUNT; t++) {
+        if (!pv.types[t]) continue;
+        const f = data.fields[t];
+        const col = colors[t];
+        const cr = (col >> 16) & 0xff, cg = (col >> 8) & 0xff, cb = col & 0xff;
+        for (let k = 0; k < f.count; k++) {
+          const idx = f.active[k];
+          const v = f.grid[idx];
+          if (v === 0) continue;
+          const prev = buf[idx];
+          const pa = (prev >>> 24) & 0xff;
+          const a = Math.min(255, pa + v);
+          const pr = prev & 0xff, pg2 = (prev >> 8) & 0xff, pb2 = (prev >> 16) & 0xff;
+          const w = v / 255;
+          const r = Math.min(255, pr + cr * w) | 0;
+          const g = Math.min(255, pg2 + cg * w) | 0;
+          const b = Math.min(255, pb2 + cb * w) | 0;
+          buf[idx] = ((a << 24) | (b << 16) | (g << 8) | r) >>> 0;
+        }
+      }
+    }
+    this.pheroCtx.putImageData(this.pheroImg, 0, 0);
+    this.pheroTexture.source.update();
+    this.stats.pheroMs = performance.now() - t0;
+  }
+
+  setPheroView(opts) {
+    Object.assign(this.pheroView, opts);
+    this._pheroTimer = 0;
+  }
+
   /** Auswahlring auf eine Ameise setzen (-1 = aus). */
   setSelection(antIndex, alpha = 1) {
     const ants = this.world.ants;
@@ -368,4 +547,12 @@ export class Renderer {
 
   /** Alphawert der Uebergangsblende (0..1). */
   setFade(a) { this.fade.alpha = a; }
+}
+
+/** Farbe aufhellen (fuer Brut in Koloniefarbe). */
+function lighten(hex) {
+  const r = Math.min(255, ((hex >> 16) & 0xff) + 90);
+  const g = Math.min(255, ((hex >> 8) & 0xff) + 90);
+  const b = Math.min(255, (hex & 0xff) + 90);
+  return (r << 16) | (g << 8) | b;
 }

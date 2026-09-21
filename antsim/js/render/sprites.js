@@ -31,7 +31,7 @@
  */
 
 import { PIXI } from './pixi.js';
-import { RENDER } from '../config.js';
+import { RENDER, CREATURES } from '../config.js';
 import { CASTE_DEFS } from '../sim/castes.js';
 
 // ---------------------------------------------------------------------------
@@ -226,6 +226,100 @@ export function drawAnt(cell, art, frame, frames) {
   cell.outline(PAL.outline);
 }
 
+/**
+ * Zeichnet eine Kreatur von oben. Gleiche Bauweise wie drawAnt, aber mit
+ * variabler Beinzahl (Spinnen acht, Insekten sechs), Fluegeln, Panzerdecke
+ * und Zangen – damit sich die Arten schon an der Silhouette unterscheiden.
+ */
+export function drawCreature(cell, art, frame, frames) {
+  const cw = cell.w, ch = cell.h;
+  const ab = art.abdomen, bd = art.body, hd = art.head;
+  const rawLen = ab[0] * 2 + bd[0] * 2 + hd[0] * 2 + (art.jaws || 0) + 1.2;
+  const sx = (cw * 0.66) / rawLen;
+  const sy = sx * 1.35;
+  const cy = ch / 2;
+  let x = cw * 0.17;
+
+  const abRX = ab[0] * sx, abRY = ab[1] * sy;
+  const bdRX = bd[0] * sx, bdRY = bd[1] * sy;
+  const hdRX = hd[0] * sx, hdRY = hd[1] * sy;
+  const abX = x + abRX; x = abX + abRX;
+  const bdX = x + bdRX; x = bdX + bdRX;
+  const hdX = x + hdRX;
+  const phase = (frame / frames) * Math.PI * 2;
+
+  // --- Beine ---------------------------------------------------------------
+  const pairs = (art.legs || 6) / 2;
+  const legLen = (ch * 0.40) * ((art.legLen || 4) / 4.5);
+  for (let j = 0; j < pairs; j++) {
+    const t = pairs > 1 ? j / (pairs - 1) : 0.5;
+    const attachX = bdX + (0.5 - t) * (bdRX * 1.6 + 1.4);
+    const base = 0.55 + t * 1.9;
+    for (let sideI = 0; sideI < 2; sideI++) {
+      const side = sideI === 0 ? -1 : 1;
+      const swing = Math.sin(phase + j * 1.1 + (side > 0 ? 0 : Math.PI)) * 0.34;
+      const a = base + swing;
+      const kx = attachX + Math.cos(a) * legLen * 0.55;
+      const ky = cy + side * Math.sin(a) * legLen * 0.55;
+      cell.line(attachX, cy + side * bdRY * 0.4, kx, ky, PAL.leg);
+      cell.line(kx, ky, attachX + Math.cos(a) * legLen, cy + side * Math.sin(a) * legLen, PAL.leg);
+    }
+  }
+
+  // --- Fluegel --------------------------------------------------------------
+  for (let k = 0; k < (art.wings || 0); k++) {
+    for (let sideI = 0; sideI < 2; sideI++) {
+      const side = sideI === 0 ? -1 : 1;
+      const len = ch * (0.30 - k * 0.06);
+      const a = 2.4 + k * 0.5;
+      cell.line(bdX, cy + side, bdX + Math.cos(a) * len, cy + side * (1.5 + Math.abs(Math.sin(a)) * len), PAL.wing);
+    }
+  }
+
+  // --- Koerper --------------------------------------------------------------
+  cell.ellipse(abX, cy, abRX, abRY, PAL.body);
+  cell.ellipse(abX - abRX * 0.15, cy - abRY * 0.3, abRX * 0.5, abRY * 0.3, PAL.light);
+  for (let k = 0; k < (art.shell || 0); k++) {
+    cell.line(abX - abRX * 0.6 + k * abRX * 0.6, cy - abRY * 0.9,
+      abX - abRX * 0.6 + k * abRX * 0.6, cy + abRY * 0.9, PAL.dark);
+  }
+  cell.ellipse(bdX, cy, bdRX, bdRY, PAL.body);
+  cell.ellipse(hdX, cy, hdRX, hdRY, PAL.body);
+  cell.plot(hdX + hdRX * 0.2, cy - hdRY * 0.55, PAL.eye);
+  cell.plot(hdX + hdRX * 0.2, cy + hdRY * 0.55, PAL.eye);
+
+  // --- Zangen ---------------------------------------------------------------
+  const jaw = (art.jaws || 0) * sx;
+  if (jaw > 0.4) {
+    const bite = Math.sin(phase) * 0.35;
+    for (let sideI = 0; sideI < 2; sideI++) {
+      const side = sideI === 0 ? -1 : 1;
+      const bx = hdX + hdRX * 0.7, by = cy + side * hdRY * 0.5;
+      cell.line(bx, by, bx + jaw * 0.8, by + side * (jaw * 0.5 + bite), PAL.dark);
+      cell.line(bx + jaw * 0.8, by + side * (jaw * 0.5 + bite), bx + jaw * 1.2, by, PAL.dark);
+    }
+  }
+  cell.outline(PAL.outline);
+}
+
+/** Brutstadien: Ei, Larve, Puppe. */
+export function drawBrood(cell, stage) {
+  const cx = cell.w / 2, cy = cell.h / 2;
+  if (stage === 0) {
+    cell.ellipse(cx, cy, cell.w * 0.17, cell.h * 0.12, PAL.light);
+  } else if (stage === 1) {
+    cell.ellipse(cx, cy, cell.w * 0.26, cell.h * 0.16, PAL.body);
+    cell.ellipse(cx + cell.w * 0.12, cy, cell.w * 0.08, cell.h * 0.09, PAL.light);
+    for (let k = -1; k <= 1; k++) {
+      cell.line(cx + k * cell.w * 0.10, cy - cell.h * 0.12, cx + k * cell.w * 0.10, cy + cell.h * 0.12, PAL.dark);
+    }
+  } else {
+    cell.ellipse(cx, cy, cell.w * 0.28, cell.h * 0.18, PAL.body);
+    cell.ellipse(cx - cell.w * 0.06, cy, cell.w * 0.14, cell.h * 0.12, PAL.dark);
+  }
+  cell.outline(PAL.outline);
+}
+
 /** Markierungs-Sprite fuer Nesteingaenge (wird mit Koloniefarbe getoent). */
 function drawEntranceMarker(cell) {
   const cx = cell.w / 2, cy = cell.h / 2;
@@ -263,6 +357,23 @@ export function defaultManifest() {
       anchor: [0.5, 0.5],
       scale: 1.0,
       animations: { walk: { from: 0, to: RENDER.WALK_FRAMES - 1, fps: 14, loop: true } },
+    };
+  }
+  for (const sp of CREATURES.SPECIES) {
+    sprites['creature_' + sp.key] = {
+      file: null,
+      frameWidth: RENDER.SPRITE_PX,
+      frameHeight: RENDER.SPRITE_PX,
+      frames: RENDER.WALK_FRAMES,
+      anchor: [0.5, 0.5],
+      scale: 1.0,
+      animations: { walk: { from: 0, to: RENDER.WALK_FRAMES - 1, fps: 12, loop: true } },
+    };
+  }
+  for (const st of ['egg', 'larva', 'pupa']) {
+    sprites['brood_' + st] = {
+      file: null, frameWidth: RENDER.SPRITE_PX, frameHeight: RENDER.SPRITE_PX, frames: 1,
+      anchor: [0.5, 0.5], scale: 1.0, animations: {},
     };
   }
   sprites.marker_entrance = {
@@ -351,7 +462,12 @@ export class SpriteBank {
         const cell = new Cell(buf, canvas.width, f * this.pitch + 1, r * this.pitch + 1, this.cell, this.cell);
         if (key === 'marker_entrance') drawEntranceMarker(cell);
         else if (key === 'marker_select') drawSelectRing(cell);
-        else {
+        else if (key.startsWith('creature_')) {
+          const sp = CREATURES.SPECIES.find((c) => c.key === key.slice(9));
+          if (sp && sp.art) drawCreature(cell, sp.art, f, frames);
+        } else if (key.startsWith('brood_')) {
+          drawBrood(cell, key === 'brood_egg' ? 0 : (key === 'brood_larva' ? 1 : 2));
+        } else {
           const casteKey = key.replace(/^ant_/, '');
           const def = CASTE_DEFS.find((c) => c.key === casteKey);
           drawAnt(cell, def ? def.art : CASTE_DEFS[1].art, f, frames);

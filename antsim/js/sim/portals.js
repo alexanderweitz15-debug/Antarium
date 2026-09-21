@@ -121,10 +121,14 @@ export class PortalSystem {
 
   /**
    * Darf eine Einheit der Kolonie colonyId gerade eintreten?
-   * Verschlossene oder blockierte Portale lassen nur eigene Einheiten durch.
+   *
+   * Fremde Ameisen kommen nur als Raubzug hinein (raider = true, ab Phase 5).
+   * Ohne diese Sperre laufen Sammlerinnen versehentlich in Nachbarnester,
+   * nehmen dort Aufgaben an und fehlen dem eigenen Volk.
    */
-  canEnter(portal, fromLevelId, colonyId) {
+  canEnter(portal, fromLevelId, colonyId, raider = false) {
     const own = portal.colonyId === colonyId;
+    if (!own && !raider) return false;
     if ((portal.closed || portal.pluggedBy >= 0) && !own) return false;
     if (fromLevelId === portal.aLevelId) return portal.usedAB < portal.capacity;
     return portal.usedBA < portal.capacity;

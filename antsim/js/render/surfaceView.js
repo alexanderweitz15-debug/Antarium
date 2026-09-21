@@ -6,8 +6,8 @@
  * markiert sind.
  */
 
-import { WORLD } from '../config.js';
-import { SURFACE_CELL, SURFACE_CELL_DEFS } from '../sim/surface.js';
+import { WORLD, FOOD } from '../config.js';
+import { SURFACE_CELL, SURFACE_CELL_DEFS, FOOD_OF_CELL } from '../sim/surface.js';
 import { pack, shade, PATTERN_A, PATTERN_B, cellBlock } from './paint.js';
 
 /** Vorberechnete Farbpaare je Zelltyp (Basis, Streu, Glanz). */
@@ -19,6 +19,17 @@ for (const d of SURFACE_CELL_DEFS) {
   ALT[d.id] = pack(d.alt);
   HI[d.id] = shade(d.color, 1.22);
 }
+/**
+ * Nahrungszellen: Hoechstbestand je Typ. Der Restbestand steht in
+ * level.meta und wird als Helligkeit dargestellt – eine abgeerntete Quelle
+ * sieht man sofort.
+ */
+const FOOD_MAX = new Uint8Array(64);
+for (let id = 0; id < FOOD_OF_CELL.length; id++) {
+  const key = FOOD_OF_CELL[id];
+  if (key) FOOD_MAX[id] = Math.min(255, FOOD.PROFILES[key].max);
+}
+
 /** Zusatzfarben, die sich nicht aus der Definitionstabelle ergeben. */
 const GRASS_BLADE = shade(0x4a7a38, 1.35);
 const FLOWER_HEART = pack(0xf2d34e);
@@ -52,6 +63,18 @@ export function paintSurfaceChunk(level, cx0, cy0, cw, ch, buf) {
       const pa = PATTERN_A[v];
       let c0 = BASE[t], c1 = ALT[t], c2 = 0, pb = 0;
 
+      // Nahrungsquellen: Helligkeit zeigt den Restbestand
+      if (FOOD_MAX[t] > 0) {
+        const def = SURFACE_CELL_DEFS[t];
+        const frac = 0.45 + 0.55 * Math.min(1, level.meta[i] / FOOD_MAX[t]);
+        c0 = shade(def.color, frac);
+        c1 = shade(def.alt, frac);
+        c2 = shade(def.color, frac * 1.35);
+        pb = PATTERN_B[v];
+        cellBlock(buf, stride, x * n, y * n, n, c0, c1, pa, c2, pb);
+        continue;
+      }
+
       switch (t) {
         case SURFACE_CELL.GRASS:
           // Leichte Helligkeitsschwankung pro Zelle + vereinzelte Halme
@@ -84,6 +107,23 @@ export function paintSurfaceChunk(level, cx0, cy0, cw, ch, buf) {
           break;
         case SURFACE_CELL.ENTRANCE:
           c0 = ENTRANCE_DARK; c1 = BASE[t];
+          break;
+        case SURFACE_CELL.FUNGUS:
+          // Leuchtender Pilz: heller Kern mit Schimmer
+          c2 = shade(SURFACE_CELL_DEFS[t].color, 1.5); pb = PATTERN_B[v] | 0x0660;
+          break;
+        case SURFACE_CELL.BERRY:
+          c2 = shade(SURFACE_CELL_DEFS[t].color, 1.4); pb = 0x0660;
+          break;
+        case SURFACE_CELL.WEB:
+          // Netz: duennes Gitter statt Flaeche
+          c0 = BASE[SURFACE_CELL.GRASS];
+          c1 = ALT[t];
+          c2 = BASE[t]; pb = 0x8421;
+          break;
+        case SURFACE_CELL.FUNNEL:
+          c0 = shade(SURFACE_CELL_DEFS[t].color, 0.8 + ((v & 3) * 0.06));
+          c2 = shade(SURFACE_CELL_DEFS[t].color, 1.25); pb = PATTERN_B[v];
           break;
         default:
           break;

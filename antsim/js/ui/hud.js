@@ -34,6 +34,17 @@ export class Hud {
     refs.help.addEventListener('click', () => game.togglePanel('help'));
     refs.inspClose.addEventListener('click', () => game.clearSelection());
 
+    if (refs.research) refs.research.addEventListener('click', () => game.togglePanel('research'));
+    if (refs.stats) refs.stats.addEventListener('click', () => game.togglePanel('stats'));
+    if (refs.researchClose) refs.researchClose.addEventListener('click', () => game.togglePanel('research'));
+    if (refs.statsClose) refs.statsClose.addEventListener('click', () => game.togglePanel('stats'));
+    if (refs.pheroGroup) {
+      this.pheroButtons = [...refs.pheroGroup.querySelectorAll('[data-phero]')];
+      this.pheroButtons.forEach((b) => {
+        b.addEventListener('click', () => game.togglePhero(Number(b.dataset.phero)));
+      });
+    }
+
     refs.debug.querySelectorAll('[data-debug]').forEach((b) => {
       b.addEventListener('click', () => game.debugAction(b.dataset.debug));
     });
@@ -50,6 +61,11 @@ export class Hud {
     this.refs.trans.classList.toggle('on', state.transition);
     this.refs.legendBtn.classList.toggle('on', state.legend);
     this.refs.help.classList.toggle('on', state.help);
+    if (this.refs.research) this.refs.research.classList.toggle('on', state.research);
+    if (this.refs.stats) this.refs.stats.classList.toggle('on', state.stats);
+    if (this.pheroButtons) {
+      this.pheroButtons.forEach((b, i) => b.classList.toggle('on', state.phero[i]));
+    }
   }
 }
 
@@ -70,6 +86,9 @@ const HELP_HTML = `
 <tr><td>Mittlere Maustaste</td><td>Karte ziehen (immer)</td></tr>
 <tr><td><kbd>L</kbd></td><td>Legende ein/aus</td></tr>
 <tr><td><kbd>G</kbd></td><td>Chunk-Raster ein/aus</td></tr>
+<tr><td><kbd>R</kbd></td><td>Forschungsmenue (Evolution im Zeitraffer)</td></tr>
+<tr><td><kbd>T</kbd></td><td>Stammbaum und Statistik</td></tr>
+<tr><td><kbd>P</kbd></td><td>Nahrungsspuren einblenden</td></tr>
 <tr><td><kbd>F3</kbd></td><td>Performance-Overlay</td></tr>
 <tr><td><kbd>F4</kbd></td><td>Debug-Menue</td></tr>
 <tr><td><kbd>H</kbd></td><td>diese Hilfe</td></tr>

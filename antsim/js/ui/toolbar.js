@@ -11,13 +11,14 @@
  * die Simulation die einzige Stelle, die Weltzustand veraendert.
  */
 
-import { TOOLS, CASTE_STATS } from '../config.js';
+import { TOOLS, CASTE_STATS, FOOD } from '../config.js';
 import { LEVEL_KIND } from '../sim/levels.js';
 import { SURFACE_CELL, SURFACE_CELL_DEFS } from '../sim/surface.js';
 import { NEST_CELL, NEST_CELL_DEFS, CHAMBER, CHAMBER_DEFS } from '../sim/nest.js';
 import { CASTE, CASTE_DEFS } from '../sim/castes.js';
 import { cellSwatch } from './swatch.js';
 import { bus, CAT } from '../sim/events.js';
+import { SPECIES_LIST } from '../sim/creatures.js';
 
 /**
  * Werkzeugtabelle.
@@ -50,12 +51,44 @@ export const TOOL_DEFS = [
   { key: 'order', name: 'Bauauftrag', kind: 'order', where: 'nest',
     hint: 'Die Kolonie graebt diese Zellen selbst ab' },
 
+  // --- Nahrung (nur Oberflaeche) ---------------------------------------
+  { key: 'f_sugar', name: 'Zuckerwuerfel', kind: 'food', where: 'surface', cell: SURFACE_CELL.SUGARCUBE },
+  { key: 'f_meat', name: 'Fleisch', kind: 'food', where: 'surface', cell: SURFACE_CELL.MEAT },
+  { key: 'f_seeds', name: 'Samenhaufen', kind: 'food', where: 'surface', cell: SURFACE_CELL.SEEDPILE },
+  { key: 'f_aphids', name: 'Blattlaeuse', kind: 'food', where: 'surface', cell: SURFACE_CELL.APHIDS },
+  { key: 'f_fruit', name: 'Fallobst', kind: 'food', where: 'surface', cell: SURFACE_CELL.FRUIT },
+  { key: 'f_carrion', name: 'Aas', kind: 'food', where: 'surface', cell: SURFACE_CELL.CARRION },
+
+  // --- Mutagene ---------------------------------------------------------
+  { key: 'm_fungus', name: 'Leuchtpilz', kind: 'paint', where: 'surface', cell: SURFACE_CELL.FUNGUS,
+    hint: 'Mutagen: verdoppelt die Mutationsstaerke der naechsten Generation' },
+  { key: 'm_berry', name: 'Giftbeere', kind: 'paint', where: 'surface', cell: SURFACE_CELL.BERRY,
+    hint: 'Mutagen: Stress und Sprungmutationen hoch, kostet Trefferpunkte' },
+
   // --- Einheiten --------------------------------------------------------
   { key: 'ants', name: 'Ameisen', kind: 'ants', where: 'both',
     hint: 'Ameisen der gewaehlten Kolonie absetzen' },
   { key: 'colony', name: 'Kolonie gruenden', kind: 'colony', where: 'surface',
     hint: 'Neues Volk mit eigener Nest-Ebene' },
+  { key: 'erase', name: 'Pheromon loeschen', kind: 'erase', where: 'surface',
+    hint: 'Loescht alle Spuren der gewaehlten Kolonie im Pinselbereich' },
+
+  // --- Kreaturen (aus der Artentabelle erzeugt) -------------------------
+  ...SPECIES_LIST.map((sp) => ({
+    key: 'c_' + sp.key, name: sp.name, kind: 'creature', where: 'surface',
+    species: sp.key, hint: sp.desc,
+  })),
 ];
+
+/** Zelltyp -> Schluessel des Nahrungsprofils (fuer die Ablagemenge). */
+const FOOD_KEY = {
+  [SURFACE_CELL.SUGARCUBE]: 'sugarcube',
+  [SURFACE_CELL.MEAT]: 'meat',
+  [SURFACE_CELL.SEEDPILE]: 'seedpile',
+  [SURFACE_CELL.APHIDS]: 'aphids',
+  [SURFACE_CELL.FRUIT]: 'fruit',
+  [SURFACE_CELL.CARRION]: 'carrion',
+};
 
 export class Toolbar {
   /**
@@ -110,10 +143,14 @@ export class Toolbar {
 
     const tools = TOOL_DEFS.filter((t) => t.where === 'both' || t.where === where);
     const groups = [
-      ['Allgemein', tools.filter((t) => t.kind === 'select')],
-      [where === 'surface' ? 'Terrain' : 'Graben und Fuellen', tools.filter((t) => t.kind === 'paint')],
+      ['Allgemein', tools.filter((t) => t.kind === 'select' || t.kind === 'erase')],
+      [where === 'surface' ? 'Terrain' : 'Graben und Fuellen',
+        tools.filter((t) => t.kind === 'paint' && !t.key.startsWith('m_'))],
+      ['Nahrung', tools.filter((t) => t.kind === 'food')],
+      ['Mutagene', tools.filter((t) => t.key.startsWith('m_'))],
       ['Bauen', tools.filter((t) => t.kind === 'order')],
       ['Einheiten', tools.filter((t) => t.kind === 'ants' || t.kind === 'colony')],
+      ['Kreaturen', tools.filter((t) => t.kind === 'creature')],
     ];
 
     for (const [title, list] of groups) {
@@ -139,12 +176,19 @@ export class Toolbar {
       const b = document.createElement('button');
       b.className = 'tool';
       b.title = (t.hint || t.name) + '';
-      if (t.kind === 'paint') {
+      if (t.kind === 'paint' || t.kind === 'food') {
         const defs = level.kind === LEVEL_KIND.SURFACE ? SURFACE_CELL_DEFS : NEST_CELL_DEFS;
         const def = defs[t.cell];
         b.innerHTML = '<img src="' + cellSwatch(level.kind, t.cell, 0) + '" alt="">'
           + '<span>' + t.name + '</span>';
         b.title = t.name + ' – ' + (t.hint || (def ? def.desc : ''));
+      } else if (t.kind === 'creature') {
+        b.innerHTML = '<img src="' + this.sprites.dataURL('creature_' + t.species, 0) + '" alt="">'
+          + '<span>' + t.name + '</span>';
+        b.title = t.name + ' – ' + t.hint;
+      } else if (t.kind === 'erase') {
+        b.innerHTML = '<span class="glyph">\u2298</span><span>' + t.name + '</span>';
+        b.title = t.hint;
       } else if (t.kind === 'ants') {
         b.innerHTML = '<img src="' + this.sprites.dataURL('ant_worker', 0) + '" alt="">'
           + '<span>' + t.name + '</span>';
@@ -266,6 +310,31 @@ export class Toolbar {
       case 'paint': {
         const n = world.paint(level, cell.x, cell.y, this.brush, t.cell, 0);
         return n > 0;
+      }
+      case 'food': {
+        const key = FOOD_KEY[t.cell];
+        const amount = key ? FOOD.PROFILES[key].max : 100;
+        const n = world.placeFood(level, cell.x, cell.y, this.brush, t.cell, amount);
+        if (n > 0 && !dragging) {
+          bus.logEvent(CAT.ERNAEHRUNG, n + 'x ' + t.name + ' abgelegt', {
+            tick: world.tick, levelId: level.id, x: cell.x, y: cell.y,
+          });
+        }
+        return n > 0;
+      }
+      case 'creature': {
+        if (dragging) return false;
+        const n = world.spawnCreaturesAt(t.species, level, cell.x, cell.y,
+          Math.max(1, Math.round(this.brush / 3)));
+        bus.logEvent(CAT.RAEUBER, n + 'x ' + t.name + ' gespawnt', {
+          tick: world.tick, levelId: level.id, x: cell.x, y: cell.y,
+        });
+        return n > 0;
+      }
+      case 'erase': {
+        if (!world.phero) return false;
+        world.phero.erase(this.colonyId, cell.x, cell.y, this.brush);
+        return true;
       }
       case 'order': {
         const colony = world.colonies.get(level.colonyId);

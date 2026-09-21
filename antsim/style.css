@@ -15,6 +15,8 @@
   --accent-2: #d9a441;
   --warn: #d9604a;
   --radius: 4px;
+  /** Hoehe der Kopfzeile; wird von main.js an den Umbruch angepasst. */
+  --barh: 34px;
   --font: 11px/1.45 "DejaVu Sans Mono", "SF Mono", Menlo, Consolas, monospace;
 }
 
@@ -65,11 +67,13 @@ html, body {
 .bar {
   position: absolute;
   top: 0; left: 0; right: 0;
-  height: 34px;
+  min-height: 34px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 0 8px;
+  gap: 4px;
+  padding: 3px 6px;
+  white-space: nowrap;
   background: linear-gradient(180deg, rgba(20,24,26,.97), rgba(20,24,26,.88));
   border-bottom: 1px solid var(--line);
 }
@@ -81,6 +85,10 @@ html, body {
   white-space: nowrap;
   padding-right: 6px;
   border-right: 1px solid var(--line);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 190px;
+  flex: 0 1 auto;
 }
 .crumb b { color: var(--text); font-weight: 600; }
 
@@ -108,7 +116,7 @@ html, body {
 .group { display: flex; gap: 2px; }
 
 .btn {
-  padding: 3px 8px;
+  padding: 3px 6px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel-2);
@@ -121,10 +129,12 @@ html, body {
 .btn.tiny { padding: 1px 5px; }
 
 .seed {
-  color: var(--text-dim);
+  color: #59645f;
   border-left: 1px solid var(--line);
-  padding-left: 8px;
+  padding-left: 6px;
   white-space: nowrap;
+  flex: 0 1 auto;
+  overflow: hidden;
 }
 
 /* ---------------------------------------------------------------- Panels */
@@ -157,7 +167,7 @@ html, body {
 
 #left {
   position: absolute;
-  top: 42px; left: 8px; bottom: 150px;
+  top: calc(var(--barh) + 8px); left: 8px; bottom: 150px;
   width: 190px;
   display: flex;
   flex-direction: column;
@@ -209,13 +219,13 @@ html, body {
   border: 1px solid var(--line); border-radius: var(--radius);
   font: inherit; padding: 2px 4px;
 }
-.sel { max-width: 130px; }
-.inp { width: 88px; }
+.sel { max-width: 104px; }
+.inp { width: 74px; }
 .world-group { gap: 3px; }
 
 #right {
   position: absolute;
-  top: 42px; right: 8px; bottom: 150px;
+  top: calc(var(--barh) + 8px); right: 8px; bottom: 150px;
   width: 260px;
   display: flex;
   flex-direction: column;
@@ -235,7 +245,7 @@ html, body {
 
 #inspector {
   position: absolute;
-  left: 206px; top: 42px;
+  left: 206px; top: calc(var(--barh) + 8px);
   width: 232px;
 }
 
@@ -303,10 +313,10 @@ html, body {
   white-space: pre;
   color: var(--text-dim);
 }
-#perf { top: 42px; left: 446px; min-width: 250px; }
+#perf { top: calc(var(--barh) + 8px); left: 446px; min-width: 250px; }
 #perf b { color: var(--accent); font-weight: 600; }
 #perf .warn { color: var(--warn); }
-.help { top: 42px; left: 50%; transform: translateX(-50%); white-space: normal; max-width: 460px; }
+.help { top: calc(var(--barh) + 8px); left: 50%; transform: translateX(-50%); white-space: normal; max-width: 460px; }
 .help table { border-collapse: collapse; }
 .help td { padding: 1px 10px 1px 0; vertical-align: top; }
 .help kbd {
@@ -328,6 +338,69 @@ html, body {
 .tip .sub { color: var(--text-dim); }
 
 #debugmenu { position: absolute; left: 206px; bottom: 150px; width: 200px; }
+
+/* -------------------------------------------------- Forschung / Statistik */
+#panel-research {
+  position: absolute;
+  left: 206px; top: calc(var(--barh) + 8px); bottom: 150px;
+  width: 310px;
+}
+#panel-stats {
+  position: absolute;
+  left: 50%; top: calc(var(--barh) + 8px); bottom: 150px;
+  width: 520px; transform: translateX(-50%);
+}
+.grouplabel { color: var(--text-dim); padding: 0 3px; }
+
+.res-row { margin-bottom: 6px; }
+.res-label { color: var(--text-dim); margin-bottom: 2px; }
+
+.gene-grid {
+  display: grid;
+  grid-template-columns: 92px 1fr 30px;
+  gap: 2px 5px;
+  align-items: center;
+}
+.gene-name { color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gene-val { color: var(--text); text-align: right; }
+.gene-slider { width: 100%; height: 12px; accent-color: var(--accent); }
+
+.caste-row {
+  display: flex; align-items: center; gap: 5px;
+  padding: 1px 0;
+}
+.caste-row img { width: 16px; height: 16px; image-rendering: pixelated; }
+.caste-name { color: var(--text-dim); flex: 0 0 96px; }
+.caste-name.ok { color: var(--accent); }
+.caste-req { color: #6c7a75; flex: 1 1 auto; }
+
+.forecast div { padding: 1px 0; }
+.forecast b { color: var(--accent-2); }
+
+#ff-overlay {
+  left: 50%; top: 45%; transform: translateX(-50%);
+  font-size: 13px; padding: 12px 18px;
+}
+
+/* Naehrstoffbalken */
+.nut { display: grid; grid-template-columns: 44px 1fr 34px; gap: 1px 5px; align-items: center; margin: 2px 0 0 16px; }
+.nut-label { color: var(--text-dim); }
+.nut-track { height: 6px; background: #222a2c; border-radius: 2px; overflow: hidden; position: relative; }
+.nut-fill { height: 100%; }
+.nut-mark { position: absolute; top: 0; bottom: 0; width: 1px; background: #6a7a74; left: 50%; }
+.nut-val { text-align: right; color: var(--text-dim); }
+.stress-bar { margin: 3px 0 0 16px; }
+
+/* Stammbaum */
+.lin-row { display: flex; gap: 6px; padding: 2px 0; border-bottom: 1px solid #1d2426; cursor: pointer; }
+.lin-row:hover { background: #1f272a; }
+.lin-row .sw { width: 9px; height: 9px; border-radius: 2px; margin-top: 3px; flex: 0 0 auto; }
+.lin-row .nm { flex: 0 0 82px; color: var(--text); }
+.lin-row .info { flex: 1 1 auto; color: var(--text-dim); }
+.lin-row.dead .nm { color: #6c7a75; text-decoration: line-through; }
+.stat-table { width: 100%; border-collapse: collapse; }
+.stat-table td { padding: 1px 6px 1px 0; }
+.stat-table td:first-child { color: var(--text-dim); }
 #debugmenu .panel-body { display: flex; flex-direction: column; gap: 4px; }
 
 /* ------------------------------------------------------------------ Boot */

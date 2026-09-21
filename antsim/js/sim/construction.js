@@ -159,6 +159,8 @@ export class Construction {
    * einen Platz im Nest.
    */
   needsSpace(colony, level) {
+    // Eine hungernde Kolonie baut nicht aus.
+    if (colony.starving) return false;
     const want = Math.max(DIG.MIN_NEST_CELLS, colony.total * DIG.CELLS_PER_ANT);
     return level.airCount < want;
   }

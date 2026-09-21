@@ -15,10 +15,14 @@
  * (Phase 2) und Aufgabenwahl (Phase 3) es ersetzen werden.
  */
 
-import { ANTS, LIMITS, PORTALS, DIG } from '../config.js';
+import { ANTS, LIMITS, PORTALS, DIG, PHERO, FOOD, NUTRITION, LIFE, NUTRIENT } from '../config.js';
 import { LEVEL_KIND } from './levels.js';
 import { CASTE, casteDef } from './castes.js';
-import { dumpSoil } from './surface.js';
+import { dumpSoil, FOOD_OF_CELL, SURFACE_CELL } from './surface.js';
+import { isFoodCell, dominantNutrient } from './food.js';
+import { storeFood } from './nutrition.js';
+import { PH } from './pheromones.js';
+
 
 /** Zustandsmaschine. Phase 1 nutzt IDLE/EXPLORE/RETURN/TRANSIT. */
 export const ANT_STATE = {
@@ -125,6 +129,19 @@ export class Ants {
     /** Sperre gegen sofortigen Wiedereintritt. */
     this.portalCooldown = new Uint8Array(capacity);
 
+    /** Zelltyp der Nahrungsquelle, von der die Fuhre stammt (Profil). */
+    this.carrySource = new Uint8Array(capacity);
+    /**
+     * Ticks seit dem letzten "Spurstart" (Nestausgang bzw. Fundstelle).
+     * Die Ablagemenge faellt damit ab – dadurch zeigt der Heimweg-Gradient
+     * zum Nest und der Nahrungs-Gradient zur Fundstelle.
+     */
+    this.trip = new Uint16Array(capacity);
+    /** Lebensdauer in Ticks (0 = unbegrenzt, z. B. per Werkzeug gesetzt). */
+    this.lifespan = new Uint32Array(capacity);
+    /** Ticks, die die Ameise in einem Netz festhaengt. */
+    this.stuck = new Uint8Array(capacity);
+
     // --- Darstellung ------------------------------------------------------
     /** Animationsphase in Frames (float, wird beim Zeichnen gerundet). */
     this.anim = new Float32Array(capacity);
@@ -187,6 +204,10 @@ export class Ants {
     this.transit[i] = 0;
     this.portalRef[i] = -1;
     this.portalCooldown[i] = 0;
+    this.carrySource[i] = 0;
+    this.trip[i] = 0;
+    this.lifespan[i] = opts.lifespan !== undefined ? opts.lifespan : 0;
+    this.stuck[i] = 0;
     this.anim[i] = 0;
     this.count++;
     return i;
@@ -223,7 +244,7 @@ export class Ants {
       if (b) b.ids[b.count++] = i;
       if (colonyManager) {
         const c = colonyManager.get(this.colony[i]);
-        if (c) c.countAnt(this.caste[i], lv, this.state[i] === ANT_STATE.DIG);
+        if (c) c.countAnt(this.caste[i], lv, this.state[i]);
       }
     }
     for (const lvl of levelManager.levels) {
@@ -249,12 +270,25 @@ export class Ants {
    * @param {import('./levels.js').Level} level
    * @param {{portals:import('./portals.js').PortalSystem, levels:import('./levels.js').LevelManager, rng:import('../rng.js').RNG, tick:number}} ctx
    */
+  /**
+   * Simulation einer Ebene.
+   *
+   * Oberflaeche: Futtersuche ueber Pheromone (Phase 2). Ausrueckende Ameisen
+   * legen die Heimweg-Spur, heimkehrende mit Beute die Nahrungsspur; beide
+   * Ablagen fallen mit der Laufzeit seit dem Spurstart ab. Dadurch zeigt
+   * jeder Gradient in die richtige Richtung, ohne dass irgendwo ein Weg
+   * geskriptet waere.
+   *
+   * Nest: Navigation ueber Distanzfelder, Aufgaben Graben, Abliefern und
+   * Brutpflege.
+   */
   update(level, ctx) {
     const b = this.buckets.get(level.id);
     if (!b) return;
     const rng = ctx.rng;
     const isNest = level.kind === LEVEL_KIND.NEST;
     const fields = isNest && ctx.fields ? ctx.fields.get(level.id) : null;
+    const phero = ctx.phero;
     const maxX = level.w - 0.25;
     const maxY = level.h - 0.25;
 
@@ -264,6 +298,7 @@ export class Ants {
       this.py[i] = this.y[i];
       this.age[i]++;
       if (this.portalCooldown[i] > 0) this.portalCooldown[i]--;
+      if (this.trip[i] < 65000) this.trip[i]++;
 
       // ---- Im Eingangsschacht ------------------------------------------
       if (this.state[i] === ANT_STATE.TRANSIT) {
@@ -271,89 +306,316 @@ export class Ants {
         continue;
       }
 
-      // ---- Koeniginnen bleiben in ihrer Kammer --------------------------
+      // ---- Altersschwaeche ----------------------------------------------
+      if (this.lifespan[i] > 0 && this.age[i] > this.lifespan[i]) {
+        this._die(i, level, ctx, 'Alter');
+        continue;
+      }
+
+      const colony = ctx.colonies ? ctx.colonies.get(this.colony[i]) : null;
+
+      // ---- Hunger --------------------------------------------------------
+      if (colony) {
+        // Hunger steigt anteilig zur Unterdeckung, nicht als Alles-oder-nichts
+        const gap = 1 - (colony.supply !== undefined ? colony.supply : 1);
+        if (gap > 0.001) {
+          this.hunger[i] += NUTRITION.HUNGER_RATE * gap;
+          if (this.hunger[i] >= 1) { this._die(i, level, ctx, 'Hunger'); continue; }
+        } else if (this.hunger[i] > 0) {
+          this.hunger[i] = Math.max(0, this.hunger[i] - NUTRITION.HUNGER_RATE * 3);
+        }
+      }
+      const slow = this.hunger[i] > NUTRITION.HUNGER_SLOW ? 0.55 : 1;
+
+      // ---- Im Spinnennetz gefangen ---------------------------------------
+      if (this.stuck[i] > 0) {
+        this.stuck[i]--;
+        this.anim[i] += 0.2;
+        continue;
+      }
+
+      // ---- Koenigin bleibt in ihrer Kammer -------------------------------
       if (this.caste[i] === CASTE.QUEEN) {
         if (rng.chance(0.02)) this.dir[i] += rng.range(-0.6, 0.6);
-        this._move(level, i, 0.25, maxX, maxY, rng);
+        this._move(level, i, 0.22, maxX, maxY, rng);
         continue;
       }
 
       if (this.timer[i] > 0) this.timer[i]--;
-      const colony = ctx.colonies ? ctx.colonies.get(this.colony[i]) : null;
 
-      // ---- Zustandslogik -------------------------------------------------
-      switch (this.state[i]) {
-        case ANT_STATE.EXPLORE:
-          // Im Nest: Grabauftrag annehmen, wenn die Kolonie einen hat und
-          // noch nicht genug Ameisen daran arbeiten.
-          if (isNest && colony && colony.digActive >= 0 && this.caste[i] === CASTE.WORKER
-              && this.carryType[i] === CARRY.NONE
-              && colony.diggers < Math.max(4, (colony.populationByLevel.get(level.id) || 0) * DIG.DIGGER_SHARE)
-              && rng.chance(0.06)) {
-            this.state[i] = ANT_STATE.DIG;
-            this.timer[i] = DIG.JOB_TIMEOUT;
-            colony.diggers++;
-            break;
-          }
-          this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
-          if (this.timer[i] === 0) this._beginReturn(level, i, ctx);
-          break;
+      if (isNest) this._nestBehaviour(level, i, ctx, colony, fields, rng);
+      else this._surfaceBehaviour(level, i, ctx, colony, phero, rng);
 
-        case ANT_STATE.DIG: {
-          if (!colony || colony.digActive < 0 || this.timer[i] === 0) {
-            this.state[i] = ANT_STATE.EXPLORE;
-            this.timer[i] = rng.intRange(ANTS.NEST_STAY_MIN, ANTS.NEST_STAY_MAX);
-            break;
-          }
-          const tx = (colony.digActive % level.w) + 0.5;
-          const ty = ((colony.digActive / level.w) | 0) + 0.5;
-          const dx = tx - this.x[i], dy = ty - this.y[i];
-          const d2 = dx * dx + dy * dy;
-          if (d2 <= DIG.REACH * DIG.REACH) {
-            // An der Tunnelbrust: graben statt laufen.
-            this.dir[i] = Math.atan2(dy, dx);
-            this.anim[i] += 0.35;
-            const done = ctx.construction.contribute(colony, level, DIG.RATE_PER_ANT);
-            if (done >= 0) {
-              // Wer den letzten Spatenstich macht, traegt den Aushub weg.
-              this.carryType[i] = CARRY.SOIL;
-              this.carryAmount[i] = 1;
-              this._beginReturn(level, i, ctx);
-            }
-            continue; // keine Bewegung in diesem Tick
-          }
-          if (!fields || !this._steerField(level, i, fields.dig, rng)) {
-            this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
-          }
-          break;
-        }
-
-        case ANT_STATE.RETURN: {
-          const tx = this.targetX[i], ty = this.targetY[i];
-          if (tx < 0) {
-            this.state[i] = ANT_STATE.EXPLORE;
-            this.timer[i] = rng.intRange(ANTS.EXPLORE_TICKS_MIN, ANTS.EXPLORE_TICKS_MAX);
-            break;
-          }
-          // Im Nest ueber das Distanzfeld, an der Oberflaeche direkt steuern.
-          if (isNest && fields && this._steerField(level, i, fields.entrance, rng)) break;
-          const want = Math.atan2(ty + 0.5 - this.y[i], tx + 0.5 - this.x[i]);
-          this.dir[i] += angleDelta(this.dir[i], want) * ANTS.STEER_GAIN + rng.range(-0.08, 0.08);
-          break;
-        }
-
-        default:
-          this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
-          break;
-      }
-
-      this._move(level, i, 1, maxX, maxY, rng);
+      this._move(level, i, slow, maxX, maxY, rng);
 
       // ---- Portalpruefung ------------------------------------------------
       if (this.portalCooldown[i] === 0) {
         const cx = this.x[i] | 0, cy = this.y[i] | 0;
         const p = ctx.portals.at(level.id, cx, cy);
         if (p !== null) this._tryEnter(level, i, p, ctx);
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Oberflaeche: Futtersuche mit Pheromonen
+  // -------------------------------------------------------------------------
+  _surfaceBehaviour(level, i, ctx, colony, phero, rng) {
+    const cx = this.x[i] | 0, cy = this.y[i] | 0;
+    const cid = this.colony[i];
+
+    // --- Fallen der Raeuber ------------------------------------------------
+    const under = level.cells[cy * level.w + cx];
+    if (under === SURFACE_CELL.WEB) {
+      this.stuck[i] = 45;
+      if (phero) phero.deposit(cid, PH.ALARM, cx, cy, PHERO.DEPOSIT.ALARM * 0.6);
+      return;
+    }
+    if (under === SURFACE_CELL.FUNNEL) {
+      this.hp[i] -= 0.06;
+      this.stuck[i] = 12;
+      if (this.hp[i] <= 0) { this._die(i, level, ctx, 'Raeuber'); return; }
+      if (phero) phero.deposit(cid, PH.ALARM, cx, cy, PHERO.DEPOSIT.ALARM * 0.6);
+      return;
+    }
+    const gene = colony && colony.genome ? colony.genome.pheromonstaerke : 0.5;
+    const strength = 0.5 + gene;
+    // Ablage faellt mit der Laufzeit seit dem Spurstart ab
+    const fall = Math.max(0.12, 1 - this.trip[i] / PHERO.DEPOSIT_FALLOFF);
+
+    if (this.state[i] === ANT_STATE.RETURN && this.carryType[i] === CARRY.FOOD) {
+      if (phero) {
+        phero.deposit(cid, PH.FOOD, cx, cy, PHERO.DEPOSIT.FOOD * strength * fall, this.carryNutrient[i]);
+      }
+    } else if (phero) {
+      phero.deposit(cid, PH.HOME, cx, cy, PHERO.DEPOSIT.HOME * strength * fall);
+    }
+
+    switch (this.state[i]) {
+      case ANT_STATE.EXPLORE: {
+        // Nahrung unter den Fuessen?
+        if (this.carryType[i] === CARRY.NONE && ctx.food) {
+          const cell = level.cells[cy * level.w + cx];
+          if (isFoodCell(cell) && level.meta[cy * level.w + cx] > 0) {
+            const got = ctx.food.take(level, cx, cy, FOOD.PICKUP);
+            if (got > 0) {
+              this.carryType[i] = CARRY.FOOD;
+              this.carrySource[i] = cell;
+              this.carryNutrient[i] = dominantNutrient(cell);
+              this.carryAmount[i] = got;
+              this.trip[i] = 0;                       // neue Spur ab hier
+              this._beginReturn(level, i, ctx);
+              // Fundstelle kraeftig markieren
+              if (phero) {
+                phero.deposit(cid, PH.FOOD, cx, cy, PHERO.DEPOSIT.FOOD * 2.2, this.carryNutrient[i]);
+              }
+              break;
+            }
+          }
+        }
+        // Alarm geht vor: Soldatinnen und aggressive Voelker ruecken aus
+        const aggr = colony && colony.genome ? colony.genome.aggressivitaet : 0.5;
+        const defends = this.caste[i] === CASTE.SOLDIER || aggr > 0.6;
+        if (defends && phero && this._followTrail(level, i, phero, cid, PH.ALARM, null, rng)) break;
+
+        // Nahrungsspur verfolgen, sonst suchen
+        if (!phero || !this._followTrail(level, i, phero, cid, PH.FOOD,
+          colony ? colony.needWeight : null, rng)) {
+          this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+        }
+        if (this.timer[i] === 0) this._beginReturn(level, i, ctx);
+        break;
+      }
+
+      case ANT_STATE.RETURN: {
+        // Heimweg-Spur verfolgen; ohne Spur direkt zum Eingang
+        const followed = phero && this._followTrail(level, i, phero, cid, PH.HOME, null, rng);
+        if (!followed) {
+          const tx = this.targetX[i], ty = this.targetY[i];
+          if (tx < 0) { this._beginReturn(level, i, ctx); break; }
+          const want = Math.atan2(ty + 0.5 - this.y[i], tx + 0.5 - this.x[i]);
+          this.dir[i] += angleDelta(this.dir[i], want) * ANTS.STEER_GAIN + rng.range(-0.08, 0.08);
+        } else if (rng.chance(0.08)) {
+          // gelegentlicher Blick auf den Eingang, damit niemand im Kreis laeuft
+          const tx = this.targetX[i], ty = this.targetY[i];
+          if (tx >= 0) {
+            const want = Math.atan2(ty + 0.5 - this.y[i], tx + 0.5 - this.x[i]);
+            this.dir[i] += angleDelta(this.dir[i], want) * 0.25;
+          }
+        }
+        break;
+      }
+
+      default:
+        // An der Oberflaeche gibt es keine Nestaufgaben – zurueck auf Suche,
+        // damit keine Ameise in einem Zustand haengen bleibt.
+        this.state[i] = ANT_STATE.EXPLORE;
+        this.timer[i] = rng.intRange(ANTS.EXPLORE_TICKS_MIN, ANTS.EXPLORE_TICKS_MAX);
+        this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+        break;
+    }
+  }
+
+  /**
+   * Sensoren links/vorne/rechts. Liefert false, wenn keine Spur zu riechen
+   * ist – dann uebernimmt das Zufallsverhalten.
+   */
+  _followTrail(level, i, phero, colonyId, type, needWeight, rng) {
+    const a = this.dir[i];
+    const d = PHERO.SENSE_DIST;
+    const sa = PHERO.SENSE_ANGLE;
+    const x = this.x[i], y = this.y[i];
+    const fx = x + Math.cos(a) * d, fy = y + Math.sin(a) * d;
+    const lx = x + Math.cos(a - sa) * d, ly = y + Math.sin(a - sa) * d;
+    const rx = x + Math.cos(a + sa) * d, ry = y + Math.sin(a + sa) * d;
+    const f = phero.sense(colonyId, type, fx, fy, needWeight);
+    const l = phero.sense(colonyId, type, lx, ly, needWeight);
+    const r = phero.sense(colonyId, type, rx, ry, needWeight);
+    if (f < 3 && l < 3 && r < 3) return false;
+    if (f >= l && f >= r) {
+      this.dir[i] += rng.range(-PHERO.NOISE, PHERO.NOISE) * 0.5;
+    } else if (l > r) {
+      this.dir[i] -= sa * PHERO.STEER;
+    } else {
+      this.dir[i] += sa * PHERO.STEER;
+    }
+    this.dir[i] += rng.range(-PHERO.NOISE, PHERO.NOISE) * 0.35;
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Nest: Abliefern, Graben, Brutpflege
+  // -------------------------------------------------------------------------
+  _nestBehaviour(level, i, ctx, colony, fields, rng) {
+    switch (this.state[i]) {
+      case ANT_STATE.DELIVER: {
+        if (this.carryType[i] !== CARRY.FOOD) {
+          this.state[i] = ANT_STATE.EXPLORE;
+          this.timer[i] = rng.intRange(30, 120);
+          break;
+        }
+        const f = fields ? fields.store : null;
+        const here = f ? f.at(this.x[i] | 0, this.y[i] | 0) : 9999;
+        if (here === 0 || this.timer[i] === 0) {
+          // Angekommen (oder aufgegeben): einlagern
+          if (colony) {
+            const key = FOOD_OF_CELL[this.carrySource[i]];
+            const prof = key ? FOOD.PROFILES[key].n : [0.34, 0.33, 0.33];
+            storeFood(colony, this.carryNutrient[i], this.carryAmount[i], prof);
+            colony.deliveries = (colony.deliveries || 0) + 1;
+          }
+          this.carryType[i] = CARRY.NONE;
+          this.carryAmount[i] = 0;
+          this.state[i] = ANT_STATE.EXPLORE;
+          this.timer[i] = rng.intRange(30, 150);
+          break;
+        }
+        if (!f || !this._steerField(level, i, f, rng)) {
+          this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+        }
+        break;
+      }
+
+      case ANT_STATE.NURSE: {
+        if (!colony || !ctx.brood || this.timer[i] === 0) {
+          this.state[i] = ANT_STATE.EXPLORE;
+          this.timer[i] = rng.intRange(60, 240);
+          break;
+        }
+        const larva = ctx.brood.findHungryLarva(colony.id, level.id, this.x[i], this.y[i], 7);
+        if (larva >= 0) {
+          // Fuettern kostet Protein aus dem Vorrat
+          const want = 0.5;
+          const have = Math.min(want, colony.storeArr[NUTRIENT.PROTEIN]);
+          if (have > 0.01) {
+            const used = ctx.brood.feed(larva, have);
+            colony.storeArr[NUTRIENT.PROTEIN] -= used;
+            colony.fedTotal = (colony.fedTotal || 0) + used;
+          }
+          const dx = ctx.brood.x[larva] - this.x[i], dy = ctx.brood.y[larva] - this.y[i];
+          this.dir[i] = Math.atan2(dy, dx);
+          this.anim[i] += 0.25;
+          break;
+        }
+        if (!fields || !this._steerField(level, i, fields.brood, rng)) {
+          this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+        }
+        break;
+      }
+
+      case ANT_STATE.DIG: {
+        if (!colony || colony.digActive < 0 || this.timer[i] === 0) {
+          this.state[i] = ANT_STATE.EXPLORE;
+          this.timer[i] = rng.intRange(ANTS.NEST_STAY_MIN, ANTS.NEST_STAY_MAX);
+          break;
+        }
+        const tx = (colony.digActive % level.w) + 0.5;
+        const ty = ((colony.digActive / level.w) | 0) + 0.5;
+        const dx = tx - this.x[i], dy = ty - this.y[i];
+        if (dx * dx + dy * dy <= DIG.REACH * DIG.REACH) {
+          this.dir[i] = Math.atan2(dy, dx);
+          this.anim[i] += 0.35;
+          const rate = DIG.RATE_PER_ANT
+            * (colony.genome ? 0.6 + colony.genome.grabgeschwindigkeit : 1);
+          const done = ctx.construction.contribute(colony, level, rate);
+          if (done >= 0) {
+            this.carryType[i] = CARRY.SOIL;
+            this.carryAmount[i] = 1;
+            this._beginReturn(level, i, ctx);
+          }
+          return;   // graben statt laufen
+        }
+        if (!fields || !this._steerField(level, i, fields.dig, rng)) {
+          this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+        }
+        break;
+      }
+
+      case ANT_STATE.RETURN: {
+        if (!fields || !this._steerField(level, i, fields.entrance, rng)) {
+          const tx = this.targetX[i], ty = this.targetY[i];
+          if (tx < 0) { this._beginReturn(level, i, ctx); break; }
+          const want = Math.atan2(ty + 0.5 - this.y[i], tx + 0.5 - this.x[i]);
+          this.dir[i] += angleDelta(this.dir[i], want) * ANTS.STEER_GAIN;
+        }
+        break;
+      }
+
+      default: {
+        // EXPLORE im Nest: Aufgabe suchen, sonst herumlaufen und ausruecken.
+        // Aufgaben gibt es nur im eigenen Nest – sonst arbeitet eine Ameise
+        // im Nachbarnest ins Leere und fehlt dem eigenen Volk.
+        const ownNest = colony && colony.nestLevelIds.indexOf(level.id) >= 0;
+        if (ownNest && this.caste[i] === CASTE.WORKER && this.carryType[i] === CARRY.NONE) {
+          const inNest = colony.populationByLevel.get(level.id) || 1;
+          // Brutpflege hat Vorrang, solange Larven hungern und Protein da ist
+          if (ctx.brood && colony.broodCount && colony.broodCount[1] > 0
+              && colony.storeArr[NUTRIENT.PROTEIN] > 1
+              && colony.nurses < Math.max(2, inNest * 0.35) && rng.chance(0.08)) {
+            this.state[i] = ANT_STATE.NURSE;
+            this.timer[i] = rng.intRange(400, 1200);
+            colony.nurses++;
+            break;
+          }
+          /**
+           * Graben ist nachrangig: bei knapper Versorgung gehen die
+           * Arbeiterinnen lieber sammeln. Das ist die Prioritaetensteuerung
+           * aus dem Lastenheft ("Naehrstoffmangel -> mehr Sammlerinnen"),
+           * umgesetzt als Wahrscheinlichkeit statt als Befehl.
+           */
+          const digChance = colony.starving ? 0.004 : 0.05;
+          if (colony.digActive >= 0
+              && colony.diggers < Math.max(3, inNest * DIG.DIGGER_SHARE)
+              && rng.chance(digChance)) {
+            this.state[i] = ANT_STATE.DIG;
+            this.timer[i] = DIG.JOB_TIMEOUT;
+            colony.diggers++;
+            break;
+          }
+        }
+        this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+        if (this.timer[i] === 0) this._beginReturn(level, i, ctx);
+        break;
       }
     }
   }
@@ -369,6 +631,23 @@ export class Ants {
     const want = Math.atan2(n.y + 0.5 - this.y[i], n.x + 0.5 - this.x[i]);
     this.dir[i] += angleDelta(this.dir[i], want) * 0.5 + rng.range(-0.05, 0.05);
     return true;
+  }
+
+  /** Tod: Aas hinterlassen und Slot freigeben. */
+  _die(i, level, ctx, cause) {
+    const colony = ctx.colonies ? ctx.colonies.get(this.colony[i]) : null;
+    if (colony) {
+      colony.deaths = (colony.deaths || 0) + 1;
+      colony.deathCause = colony.deathCause || {};
+      colony.deathCause[cause] = (colony.deathCause[cause] || 0) + 1;
+      if (this.caste[i] === CASTE.QUEEN) ctx.world.queenDied(colony, level, this.x[i], this.y[i]);
+    }
+    // Tote werden zu Protein – an der Oberflaeche als Aas, im Nest nicht.
+    if (ctx.food && level.kind === LEVEL_KIND.SURFACE) {
+      ctx.food.dropCarrion(level, this.x[i] | 0, this.y[i] | 0,
+        LIFE.CORPSE_FOOD * casteDef(this.caste[i]).size);
+    }
+    this.kill(i);
   }
 
   /** Bewegung mit achsenweiser Kollision; liefert die gelaufene Distanz. */
@@ -438,6 +717,8 @@ export class Ants {
     this.state[i] = ANT_STATE.EXPLORE;
 
     const toNest = destLevel && destLevel.kind === LEVEL_KIND.NEST;
+    this.trip[i] = 0;                       // neuer Spurabschnitt
+
     if (!toNest && this.carryType[i] === CARRY.SOIL) {
       // Aushub landet als Erdhuegel neben dem Eingang – der Huegel waechst
       // sichtbar mit dem Tunnelsystem.
@@ -445,6 +726,10 @@ export class Ants {
       this.carryType[i] = CARRY.NONE;
       this.carryAmount[i] = 0;
       this.timer[i] = ctx.rng.intRange(DIG.DUMP_STAY[0], DIG.DUMP_STAY[1]);
+    } else if (toNest && this.carryType[i] === CARRY.FOOD) {
+      // Beute in die Vorratskammer bringen
+      this.state[i] = ANT_STATE.DELIVER;
+      this.timer[i] = 1200;
     } else {
       this.timer[i] = toNest
         ? ctx.rng.intRange(ANTS.NEST_STAY_MIN, ANTS.NEST_STAY_MAX)

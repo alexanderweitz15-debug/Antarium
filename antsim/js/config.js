@@ -100,8 +100,8 @@ export const ANTS = {
   EXPLORE_TICKS_MIN: 240,
   EXPLORE_TICKS_MAX: 900,
   /** Ticks, die eine Ameise im Nest bleibt, bevor sie wieder ausrueckt. */
-  NEST_STAY_MIN: 90,
-  NEST_STAY_MAX: 420,
+  NEST_STAY_MIN: 30,
+  NEST_STAY_MAX: 150,
   /** Animationsgeschwindigkeit: Laufbilder pro zurueckgelegter Zelle. */
   ANIM_FRAMES_PER_CELL: 2.2,
 };
@@ -342,3 +342,328 @@ export const MAP_PRESETS = [
 export function mapPreset(key) {
   return MAP_PRESETS.find((p) => p.key === key) || MAP_PRESETS[0];
 }
+
+// ===========================================================================
+// PHASE 2/3 – NAHRUNG UND ERNAEHRUNG
+// ===========================================================================
+
+/** Die drei Naehrstoffe. Reihenfolge = Index in allen Naehrstoff-Arrays. */
+export const NUTRIENT = { SUGAR: 0, PROTEIN: 1, FAT: 2 };
+export const NUTRIENT_KEYS = ['sugar', 'protein', 'fat'];
+export const NUTRIENT_NAMES = ['Zucker', 'Protein', 'Fett'];
+export const NUTRIENT_COLORS = [0xe8c246, 0xd1543f, 0xd8c9a3];
+
+export const FOOD = {
+  /** Einheiten, die eine Ameise pro Fuhre aufnimmt. */
+  PICKUP: 8,
+  /** Ticks zwischen zwei Nachwachs-Durchlaeufen. */
+  REGROW_INTERVAL: 30,
+  /** Globaler Regler (Umweltregler in der UI). */
+  REGROW_SCALE: 1.0,
+  /** Ab welchem Restbestand eine Quelle als leer gilt. */
+  EMPTY_AT: 1,
+  /**
+   * Profile je Nahrungstyp:
+   *   n      : Anteile [Zucker, Protein, Fett], Summe 1
+   *   max    : Hoechstbestand einer Zelle
+   *   regrow : Einheiten je Nachwachs-Durchlauf (0 = waechst nicht nach)
+   *   decay  : Einheiten, die je Durchlauf verderben (Aas)
+   */
+  PROFILES: {
+    flower:   { n: [0.95, 0.03, 0.02], max: 60,  regrow: 0.8, decay: 0 },
+    aphids:   { n: [0.90, 0.08, 0.02], max: 180, regrow: 2.2, decay: 0 },
+    fruit:    { n: [0.70, 0.05, 0.25], max: 140, regrow: 0.6, decay: 0.05 },
+    seeds:    { n: [0.15, 0.25, 0.60], max: 120, regrow: 0.5, decay: 0 },
+    carrion:  { n: [0.10, 0.70, 0.20], max: 160, regrow: 0,   decay: 0.12 },
+    sugarcube:{ n: [1.00, 0.00, 0.00], max: 255, regrow: 0,   decay: 0 },
+    meat:     { n: [0.05, 0.85, 0.10], max: 255, regrow: 0,   decay: 0.08 },
+    seedpile: { n: [0.10, 0.20, 0.70], max: 255, regrow: 0,   decay: 0 },
+  },
+  /** Regionale Verteilung: Frequenz des Rauschens fuer Nahrungszonen. */
+  REGION_FREQ: 0.009,
+  /** Grunddichte der jeweiligen Quelle in ihrer Vorzugsregion. */
+  DENSITY: { flower: 0.0045, aphids: 0.0016, fruit: 0.0012, seeds: 0.0030, carrion: 0.0008 },
+};
+
+export const NUTRITION = {
+  /** Grundverbrauch einer erwachsenen Arbeiterin pro Tick (Zucker). */
+  SUGAR_PER_ADULT: 0.00035,
+  /** Zusatzverbrauch durch Tempo und Koerpergroesse. */
+  SUGAR_SPEED_FACTOR: 0.7,
+  /** Proteinbedarf je Larve und Tick. */
+  PROTEIN_PER_LARVA: 0.0085,
+  /** Proteinbedarf der Koenigin je Ei. */
+  PROTEIN_PER_EGG: 0.9,
+  /** Fettbedarf je Erwachsener und Tick (Reserven). */
+  FAT_PER_ADULT: 0.00012,
+  /** Ticks des gleitenden Fensters fuer die Bilanz (3 Spieltage a 600 Ticks). */
+  BALANCE_WINDOW: 1800,
+  /** Ticks zwischen zwei Bilanz-/KI-Durchlaeufen (gestaffelt). */
+  UPDATE_INTERVAL: 15,
+  /** Hunger je Tick ohne Zucker; ab 1.0 stirbt die Ameise. */
+  HUNGER_RATE: 0.0016,
+  /** Hunger, ab dem eine Ameise langsamer wird. */
+  HUNGER_SLOW: 0.5,
+  /** Speicherkapazitaet je Naehrstoff und Vorratskammerzelle. */
+  STORE_PER_CELL: 26,
+  /** Grundkapazitaet ohne Vorratskammer. */
+  STORE_BASE: 260,
+  /** Phaenotyp: maximale Auswirkung von Ueberschuss/Mangel. */
+  PHENO_SIZE_RANGE: [0.75, 1.25],
+  PHENO_SPEED_RANGE: [0.85, 1.15],
+  PHENO_LIFE_RANGE: [0.80, 1.25],
+};
+
+// ===========================================================================
+// PHASE 2 – PHEROMONE (nur Oberflaeche; im Nest navigieren Flow Fields)
+// ===========================================================================
+export const PHERO = {
+  /** Typen je Kolonie. */
+  TYPES: { HOME: 0, FOOD: 1, ALARM: 2 },
+  TYPE_NAMES: ['Heimweg', 'Nahrung', 'Alarm'],
+  TYPE_COLORS: [0x4f9ad8, 0x66d07a, 0xd9604a],
+  COUNT: 3,
+  /** Hoechstwert einer Zelle (Uint8). */
+  MAX: 255,
+  /** Ablagemenge je Tick und Ameise. */
+  DEPOSIT: { HOME: 26, FOOD: 34, ALARM: 60 },
+  /** Ablage faellt mit der Entfernung zur Quelle ab (Ticks seit Start). */
+  DEPOSIT_FALLOFF: 900,
+  /** Ticks zwischen zwei Verdunstungsdurchlaeufen. */
+  DECAY_INTERVAL: 6,
+  /** Restanteil je Durchlauf (0.985^(1/6) pro Tick). */
+  DECAY: { HOME: 0.94, FOOD: 0.955, ALARM: 0.88 },
+  /** Sensorabstand in Zellen und Oeffnungswinkel. */
+  SENSE_DIST: 2.6,
+  SENSE_ANGLE: 0.62,
+  /** Lenkstaerke der Spurverfolgung. */
+  STEER: 0.55,
+  /** Zufallsanteil, damit Spuren nicht einfrieren. */
+  NOISE: 0.22,
+  /** Hoechstzahl aktiver Zellen je Feld (Ringpuffer). */
+  MAX_ACTIVE: 48000,
+};
+
+// ===========================================================================
+// PHASE 3 – BRUT UND LEBENSZYKLUS
+// ===========================================================================
+export const BROOD = {
+  MAX: 6000,
+  /** Ticks je Stadium (bei voller Versorgung). */
+  EGG_TICKS: 420,
+  LARVA_TICKS: 900,
+  PUPA_TICKS: 700,
+  /** Protein, das eine Larve insgesamt braucht. */
+  LARVA_PROTEIN: 7.5,
+  /** Ohne Fuetterung wird die Larve langsamer und stirbt irgendwann. */
+  LARVA_STARVE_TICKS: 1400,
+  /** Eierrate der Koenigin: Ticks zwischen zwei Eiern bei Gen 0.5. */
+  EGG_INTERVAL: 90,
+  /** Hoechstzahl Brut je Kolonie. */
+  MAX_PER_COLONY: 900,
+  /** Proteinanteil, ab dem teure Kasten aufgezogen werden koennen. */
+  RICH_PROTEIN: 0.9,
+  /** Bei extremem Mangel frisst die Kolonie eigene Eier. */
+  CANNIBAL_BALANCE: 0.35,
+};
+
+export const LIFE = {
+  /** Lebensdauer einer Arbeiterin in Ticks (Gen 0.5, Phaenotyp 1.0). */
+  WORKER_LIFESPAN: 30000,
+  QUEEN_LIFESPAN: 240000,
+  /** Streuung der Lebensdauer. */
+  LIFESPAN_JITTER: 0.25,
+  /** Tote werden zu Aas mit dieser Menge. */
+  CORPSE_FOOD: 22,
+};
+
+// ===========================================================================
+// PHASE 7 – RAEUBER UND ANDERE KREATUREN
+// ===========================================================================
+export const CREATURES = {
+  MAX: 400,
+  /** Ticks zwischen zwei Durchlaeufen der Fortpflanzungspruefung. */
+  BREED_INTERVAL: 120,
+  /** Globaler Dichteregler (Umweltregler in der UI). */
+  DENSITY_SCALE: 1.0,
+  /**
+   * Artentabelle. energy = Nahrungsspeicher, drain = Verbrauch je Tick.
+   *   diet   : 'ants' | 'aphids' | 'plants' | 'carrion'
+   *   web/funnel: baut Netz bzw. Trichter
+   *   entersNest: darf durch Portale in Nest-Ebenen
+   */
+  SPECIES: [
+    {
+      key: 'fly', name: 'Fliege', color: 0x8fa3b8,
+      size: 0.8, hp: 0.6, speed: 2.2, damage: 0, sense: 6,
+      energy: 46, drain: 0.006, breedAt: 36, breedCost: 20, maxAge: 9000,
+      diet: 'plants', prey: false, entersNest: false,
+      art: { body: [2.6, 1.9], head: [1.5, 1.4], legs: 6, legLen: 3.4, wings: 2, shell: 0, jaws: 0, abdomen: [3.0, 2.0] },
+      desc: 'Harmlos, schnell, vermehrt sich stark. Beute fuer Spinnen und Ameisen.',
+    },
+    {
+      key: 'orbweaver', name: 'Radnetzspinne', color: 0xbfa66a,
+      size: 1.8, hp: 6, speed: 0.35, damage: 2.2, sense: 9,
+      energy: 90, drain: 0.0028, breedAt: 80, breedCost: 45, maxAge: 55000,
+      diet: 'ants', prey: true, entersNest: false, web: true,
+      art: { body: [2.2, 2.0], head: [1.4, 1.3], legs: 8, legLen: 6.4, wings: 0, shell: 0, jaws: 0.8, abdomen: [3.8, 3.4] },
+      desc: 'Baut Netze zwischen Pflanzen und Steinen und wartet auf Beute.',
+    },
+    {
+      key: 'wolfspider', name: 'Wolfsspinne', color: 0x8d6f4a,
+      size: 2.2, hp: 9, speed: 1.15, damage: 3.0, sense: 18,
+      energy: 110, drain: 0.011, breedAt: 95, breedCost: 55, maxAge: 36000,
+      diet: 'ants', prey: true, entersNest: true,
+      art: { body: [2.6, 2.2], head: [1.7, 1.6], legs: 8, legLen: 5.2, wings: 0, shell: 0, jaws: 1.2, abdomen: [3.4, 2.9] },
+      desc: 'Jagt aktiv, dringt ueber Eingaenge in Nester ein.',
+    },
+    {
+      key: 'antlion', name: 'Ameisenloewe', color: 0xa89066,
+      size: 1.6, hp: 7, speed: 0.12, damage: 2.6, sense: 5,
+      energy: 100, drain: 0.0018, breedAt: 88, breedCost: 50, maxAge: 70000,
+      diet: 'ants', prey: true, entersNest: false, funnel: true,
+      art: { body: [3.0, 2.2], head: [2.2, 2.0], legs: 6, legLen: 3.0, wings: 0, shell: 1, jaws: 3.2, abdomen: [3.6, 2.6] },
+      desc: 'Graebt Trichter in Sand und zieht hineingerutschte Beute hinab.',
+    },
+    {
+      key: 'beetle', name: 'Laufkaefer', color: 0x4a5a3c,
+      size: 2.4, hp: 11, speed: 0.95, damage: 2.4, sense: 16,
+      energy: 120, drain: 0.012, breedAt: 100, breedCost: 60, maxAge: 44000,
+      diet: 'ants', prey: true, entersNest: true, digsEntrance: true,
+      art: { body: [3.2, 2.6], head: [1.8, 1.7], legs: 6, legLen: 3.6, wings: 0, shell: 2, jaws: 1.6, abdomen: [4.2, 3.2] },
+      desc: 'Nachtaktiv, frisst auch Blattlaeuse und graebt eigene Zugaenge.',
+    },
+  ],
+  /** Obergrenze je Art als Vielfaches des Startbesatzes. */
+  POP_CAP: 2.2,
+  /** Startbesatz je Art auf einer frischen Karte. */
+  START: { fly: 45, orbweaver: 8, wolfspider: 6, antlion: 5, beetle: 4 },
+  /** Kreaturen mutieren bei der Fortpflanzung (eigene kleine Evolution). */
+  MUTATION: 0.06,
+  /** Ameisen greifen Raeuber an, wenn mindestens so viele in der Naehe sind. */
+  SWARM_COURAGE: 5,
+  /** Schaden pro Tick je Ameise ueber der Schwelle. */
+  ANT_DAMAGE: 0.022,
+  /**
+   * Gejagt wird nur unterhalb dieses Anteils der Energiekapazitaet. Damit
+   * bestimmt der Stoffwechsel die Beutemenge – ein satter Raeuber laesst
+   * Ameisen in Ruhe.
+   */
+  HUNT_HUNGER: 0.6,
+  /** Ticks zwischen zwei Bissen. */
+  ATTACK_COOLDOWN: 45,
+  /** Schadensfaktor eines Bisses (mal Artschaden mal Groesse). */
+  BITE: 0.8,
+  /** Energie je erbeuteter Ameise (mal Kastengroesse). */
+  MEAL: 48,
+  /** Ticks, die eine Kreatur nach einer Mahlzeit frisst. */
+  FEED_TICKS: 260,
+  /** Mindestabstand des Startbesatzes zu Nesteingaengen (Zellen). */
+  START_MIN_DIST: 55,
+};
+
+// ===========================================================================
+// PHASE 8 – GENOM UND EVOLUTION
+// ===========================================================================
+export const GENES = [
+  // Stoffwechsel -> Zucker
+  { key: 'geschwindigkeit', name: 'Geschwindigkeit', group: 'stoffwechsel' },
+  { key: 'lebensdauer', name: 'Lebensdauer', group: 'stoffwechsel' },
+  { key: 'eierrate', name: 'Eierrate', group: 'stoffwechsel' },
+  { key: 'temperatur', name: 'Temperaturtoleranz', group: 'stoffwechsel' },
+  // Koerper -> Protein
+  { key: 'koerpergroesse', name: 'Koerpergroesse', group: 'koerper' },
+  { key: 'panzerung', name: 'Panzerung', group: 'koerper' },
+  { key: 'kieferkraft', name: 'Kieferkraft', group: 'koerper' },
+  { key: 'grabgeschwindigkeit', name: 'Grabtempo', group: 'koerper' },
+  { key: 'sensorik', name: 'Sensorik', group: 'koerper' },
+  // Verhalten -> Stress
+  { key: 'aggressivitaet', name: 'Aggressivitaet', group: 'verhalten' },
+  { key: 'verteidigung', name: 'Verteidigung', group: 'verhalten' },
+  { key: 'bautrieb', name: 'Bautrieb', group: 'verhalten' },
+  { key: 'expansionsdrang', name: 'Expansionsdrang', group: 'verhalten' },
+  { key: 'soldatenanteil', name: 'Soldatenanteil', group: 'verhalten' },
+  { key: 'pheromonstaerke', name: 'Pheromonstaerke', group: 'verhalten' },
+  { key: 'rueckzugsschwelle', name: 'Rueckzugsschwelle', group: 'verhalten' },
+  // Kastengene
+  { key: 'saeure', name: 'Saeure', group: 'kaste' },
+  { key: 'aufopferung', name: 'Aufopferung', group: 'kaste' },
+  { key: 'speicher', name: 'Speicher', group: 'kaste' },
+  { key: 'fuersorge', name: 'Fuersorge', group: 'kaste' },
+];
+
+export const EVO = {
+  /** Grundstreuung der Mutation. */
+  SIGMA_BASE: 0.055,
+  SIGMA_MAX: 0.30,
+  /** Einfluss von Stress auf die Mutationsstaerke. */
+  K_STRESS: 1.6,
+  /** Einfluss eines Naehrstoffueberschusses je Naehrstoff. */
+  K_SURPLUS: [0.9, 1.1, 0.7],
+  /** Fett-Ueberschuss stabilisiert alle Gene. */
+  FAT_STABILIZE: 0.30,
+  /** Richtungsstaerke; 0 = "Realistisch". */
+  BIAS_MODES: { realistisch: 0, standard: 0.2, stark: 0.6 },
+  DEFAULT_BIAS: 'standard',
+  /** Sprungmutation. */
+  JUMP_BASE: 0.012,
+  JUMP_RANGE: 0.3,
+  /** Stressgewichte je Naehstoff und Zusatzquellen. */
+  STRESS_WEIGHT: [0.8, 1.0, 0.6],
+  STRESS_WAR: 0.030,
+  STRESS_PREDATOR: 0.018,
+  STRESS_QUEENLOSS: 0.6,
+  STRESS_MAX: 2.5,
+  STRESS_DECAY: 0.9985,
+  /** Mutagene. */
+  FUNGUS_SIGMA: 2.0,
+  BERRY_JUMP: 3.0,
+  /** Hochzeitsflug. */
+  FLIGHT_MIN_POP: 140,
+  FLIGHT_MIN_BALANCE: 0.85,
+  FLIGHT_INTERVAL: 5400,
+  FLIGHT_ALATES: [4, 14],
+  FLIGHT_SURVIVAL: 0.35,
+  /** Muetterlicher Effekt. */
+  MATERNAL_PHENO: 0.5,
+  MATERNAL_DECAY: 0.0006,
+  /** Sandbox-Regler (Forschungsmenue). */
+  MUTATION_SCALE: 1.0,
+  FLIGHT_SCALE: 1.0,
+};
+
+/**
+ * Gewichtstabelle w[naehrstoff][gen]: wie stark ein Naehrstoffueberschuss
+ * die Stabilitaet einer Gengruppe beeinflusst. Verhaltensgene haengen am
+ * Stress und stehen deshalb in keiner Naehrstoffspalte.
+ */
+export const GENE_WEIGHTS = {
+  sugar: { geschwindigkeit: 1, lebensdauer: 1, eierrate: 1, temperatur: 1, sensorik: 0.6, bautrieb: 0.6 },
+  protein: { koerpergroesse: 1, panzerung: 1, kieferkraft: 1, grabgeschwindigkeit: 1, saeure: 0.8, aufopferung: 0.8 },
+  fat: { speicher: 1, fuersorge: 1, lebensdauer: 0.4 },
+};
+
+/** Schwellen, ab denen eine evolutionaere Kaste aufgezogen werden kann. */
+export const CASTE_UNLOCK = {
+  armor:   { gene: 'panzerung', at: 0.62, needs: ['soldier'] },
+  acid:    { gene: 'saeure', at: 0.55, needs: [] },
+  bomb:    { gene: 'aufopferung', at: 0.60, needs: ['acid'] },
+  replete: { gene: 'speicher', at: 0.58, needs: [] },
+  pioneer: { gene: 'bautrieb', at: 0.66, needs: [] },
+  medic:   { gene: 'fuersorge', at: 0.60, needs: [] },
+  scout:   { gene: 'sensorik', at: 0.64, needs: [] },
+  titan:   { gene: 'koerpergroesse', at: 0.78, needs: ['soldier', 'armor'], gene2: 'panzerung', at2: 0.72 },
+};
+
+// ===========================================================================
+// FORSCHUNGSMENUE (Sandbox) – Regler, die die Simulation beschleunigen
+// ===========================================================================
+export const RESEARCH = {
+  /** Auswahl fuer den Zeitraffer der Evolution. */
+  MUTATION_STEPS: [0.5, 1, 2, 5, 10],
+  FLIGHT_STEPS: [0.5, 1, 2, 5, 20],
+  FOOD_STEPS: [0, 0.5, 1, 2, 5],
+  PREDATOR_STEPS: [0, 0.5, 1, 2, 4],
+  /** Generationen, die "Generation ueberspringen" auf einmal rechnet. */
+  FAST_FORWARD_TICKS: 9000,
+};

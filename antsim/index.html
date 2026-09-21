@@ -27,18 +27,25 @@
     <nav id="levelnav" class="levelnav"></nav>
     <div class="grow"></div>
     <div id="speed" class="group" role="group" aria-label="Geschwindigkeit"></div>
-    <button id="btn-step" class="btn" title="Einzelschritt (nur bei Pause) – Taste .">Schritt</button>
+    <button id="btn-step" class="btn" title="Einzelschritt (nur bei Pause) – Taste .">&#9655;|</button>
+    <div class="group" id="phero-group" title="Pheromon-Overlay (nur Oberflaeche)">
+      <button class="btn toggle" data-phero="0" title="Heimweg-Spuren">Heim</button>
+      <button class="btn toggle" data-phero="1" title="Nahrungsspuren (Taste P)">Futter</button>
+      <button class="btn toggle" data-phero="2" title="Alarmspuren">Alarm</button>
+    </div>
     <div class="group">
+      <button id="btn-research" class="btn toggle" title="Forschungsmenue: Evolution im Zeitraffer (Taste R)">Forsch.</button>
+      <button id="btn-stats" class="btn toggle" title="Stammbaum und Statistik (Taste T)">Stamm.</button>
       <button id="btn-grid" class="btn toggle" title="Chunk-Raster einblenden (Taste G)">Raster</button>
-      <button id="btn-trans" class="btn toggle on" title="Ebenenuebergang animieren">Uebergang</button>
-      <button id="btn-legend" class="btn toggle on" title="Legende (Taste L)">Legende</button>
+      <button id="btn-trans" class="btn toggle on" title="Ebenenuebergang animieren">Blende</button>
+      <button id="btn-legend" class="btn toggle on" title="Legende (Taste L)">Leg.</button>
       <button id="btn-help" class="btn toggle" title="Tastenkuerzel (Taste H)">?</button>
     </div>
     <div class="group world-group">
       <select id="mapselect" class="sel" title="Kartenvorlage"></select>
       <input id="seedinput" class="inp" size="9" title="Seed der Welt" spellcheck="false">
-      <button id="btn-dice" class="btn" title="Zufaelligen Seed wuerfeln">Wuerfeln</button>
-      <button id="btn-newworld" class="btn" title="Welt mit diesen Einstellungen neu erzeugen">Neue Welt</button>
+      <button id="btn-dice" class="btn" title="Zufaelligen Seed wuerfeln">⚄</button>
+      <button id="btn-newworld" class="btn" title="Welt mit diesen Einstellungen neu erzeugen">Neu</button>
     </div>
     <div id="seedbox" class="seed" title="Version"></div>
   </header>
@@ -67,6 +74,20 @@
     <h2>Ereignisse <span id="log-filters" class="filters"></span></h2>
     <div id="log" class="panel-body scroll"></div>
   </section>
+
+  <section id="panel-research" class="panel" hidden>
+    <h2>Forschung <span class="tiny">Sandbox</span>
+      <button id="research-close" class="btn tiny">x</button></h2>
+    <div id="research" class="panel-body scroll"></div>
+  </section>
+
+  <section id="panel-stats" class="panel" hidden>
+    <h2>Stammbaum und Statistik
+      <button id="stats-close" class="btn tiny">x</button></h2>
+    <div id="stats" class="panel-body scroll"></div>
+  </section>
+
+  <div id="ff-overlay" class="overlay" hidden></div>
 
   <div id="inspector" class="panel" hidden>
     <h2>Inspektor <button id="insp-close" class="btn tiny">x</button></h2>

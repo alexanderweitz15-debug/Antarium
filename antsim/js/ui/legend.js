@@ -17,6 +17,9 @@ import { LEVEL_KIND } from '../sim/levels.js';
 import { SURFACE_CELL_DEFS } from '../sim/surface.js';
 import { NEST_CELL_DEFS, NEST_CELL, CHAMBER_DEFS } from '../sim/nest.js';
 import { CASTE_DEFS } from '../sim/castes.js';
+import { SPECIES_LIST } from '../sim/creatures.js';
+import { STAGE_NAMES } from '../sim/brood.js';
+import { NUTRIENT_NAMES } from '../config.js';
 import { cellSwatch } from './swatch.js';
 
 export class Legend {
@@ -45,8 +48,9 @@ export class Legend {
     const sig = [
       level.id, onlyVisible ? 1 : 0,
       present ? [...present].sort().join(',') : 'all',
-      world.colonies.colonies.map((c) => c.id + c.name).join(','),
+      world.colonies.colonies.map((c) => c.id + c.name + c.total).join(','),
       [...castes].sort().join(','),
+      [...world.creatureCensus].join(','),
     ].join('|');
     if (sig === this.signature) return;
     this.signature = sig;
@@ -68,6 +72,8 @@ export class Legend {
       struktur: 'Strukturen',
       kammer: 'Kammern',
       nahrung: 'Nahrungsquellen',
+      mutagen: 'Mutagene',
+      kreatur: 'Bauten der Kreaturen',
     };
     for (const [cat, list] of byCat) {
       frag.appendChild(this._category(catTitle[cat] || cat, list.map((d) => ({
@@ -95,6 +101,36 @@ export class Legend {
       color: c.colorCss,
       name: c.name,
       desc: c.total + ' Ameisen, ' + c.nestLevelIds.length + ' Nest-Ebene(n)',
+    }))));
+
+    // --- Brut (nur im Nest) -----------------------------------------------
+    if (!isSurface) {
+      frag.appendChild(this._category('Brut', ['egg', 'larva', 'pupa'].map((k, i) => ({
+        img: this.sprites.dataURL('brood_' + k, 0),
+        name: STAGE_NAMES[i],
+        desc: i === 0 ? 'Reift von selbst.'
+          : (i === 1 ? 'Muss mit Protein gefuettert werden.' : 'Reift zur Ameise heran.'),
+      }))));
+    }
+
+    // --- Kreaturen ---------------------------------------------------------
+    const cen = world.creatureCensus;
+    const creatures = SPECIES_LIST.filter((sp) => cen[sp.id] > 0).map((sp) => ({
+      img: this.sprites.dataURL('creature_' + sp.key, 0),
+      name: sp.name + ' (' + cen[sp.id] + ')',
+      desc: sp.desc,
+    }));
+    if (creatures.length) frag.appendChild(this._category('Kreaturen', creatures));
+
+    // --- Naehrstoffe --------------------------------------------------------
+    frag.appendChild(this._category('Naehrstoffe', NUTRIENT_NAMES.map((n, i) => ({
+      color: '#' + [0xe8c246, 0xd1543f, 0xd8c9a3][i].toString(16).padStart(6, '0'),
+      name: n,
+      desc: [
+        'Energie der Erwachsenen. Balken rot = Mangel, gruen = gedeckt, blau = Ueberschuss.',
+        'Wachstum der Brut und Eierproduktion.',
+        'Reserven, Lebensdauer, Ueberleben in Mangelzeiten.',
+      ][i],
     }))));
 
     // --- Kasten (nur bereits aufgetretene) --------------------------------
