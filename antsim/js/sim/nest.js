@@ -73,7 +73,7 @@ export const CHAMBER_DEFS = [
  * @param {import('../rng.js').RNG} rng
  * @param {{colonyId:number, name:string}} opts
  */
-export function createNest(rng, opts) {
+export function createNest(rng, opts, gen) {
   const level = new Level({
     kind: LEVEL_KIND.NEST,
     w: WORLD.NEST_W,
@@ -82,13 +82,13 @@ export function createNest(rng, opts) {
     colonyId: opts.colonyId,
   });
   level.setCellDefs(NEST_CELL_DEFS);
-  generateNestRock(level, rng);
+  generateNestRock(level, rng, gen);
   return level;
 }
 
 /** Erdreich, Steine, Wurzeln, Kiesel – deterministisch. */
-export function generateNestRock(level, rng) {
-  const g = GEN.NEST;
+export function generateNestRock(level, rng, gen) {
+  const g = gen || GEN.NEST;
   const seedHard = rng.int(1 << 30);
   const seedStone = rng.int(1 << 30);
   const seedScatter = rng.int(1 << 30);
@@ -169,8 +169,8 @@ export function carveChamber(level, cx, cy, rx, ry, type) {
  * Vorratskammer. Liefert die wichtigen Positionen zurueck.
  * @returns {{entrance:{x:number,y:number}, queen:{x:number,y:number}, store:{x:number,y:number}, dugCells:number}}
  */
-export function buildStartNest(level, rng) {
-  const g = GEN.NEST;
+export function buildStartNest(level, rng, gen) {
+  const g = gen || GEN.NEST;
   const surfRow = WORLD.NEST_SURFACE_ROW;
   const ex = level.w >> 1;
 
@@ -195,7 +195,8 @@ export function buildStartNest(level, rng) {
   carveTunnel(level, ex, storeX, storeY, 2);
   carveChamber(level, storeX, storeY + 1, g.START_STORE_RX, g.START_STORE_RY, CHAMBER.STORE);
 
-  const dug = countAir(level) - before;
+  level.airCount = countAir(level);
+  const dug = level.airCount - before;
   return {
     entrance: { x: ex, y: surfRow },
     queen: { x: ex, y: qy },

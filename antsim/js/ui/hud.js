@@ -40,7 +40,7 @@ export class Hud {
 
     refs.help.title = 'Tastenkuerzel (Taste H)';
     refs.helpPanel.innerHTML = HELP_HTML;
-    refs.seed.textContent = 'Seed ' + game.world.seed + '  |  v' + VERSION + ' (Phase ' + PHASE + ')';
+    refs.seed.textContent = 'v' + VERSION + ' (Phase ' + PHASE + ')';
   }
 
   update(state) {
@@ -61,10 +61,13 @@ const HELP_HTML = `
 <tr><td><kbd>0</kbd> … <kbd>8</kbd></td><td>Oberflaeche bzw. Nest-Ebene direkt</td></tr>
 <tr><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / Pfeile</td><td>Kamera verschieben</td></tr>
 <tr><td>Mausrad</td><td>Zoom auf Mausposition</td></tr>
-<tr><td>Mittlere Maustaste / <kbd>Space</kbd>+Ziehen</td><td>Karte ziehen</td></tr>
 <tr><td><kbd>Leertaste</kbd></td><td>Pause / weiter</td></tr>
 <tr><td><kbd>1</kbd>…<kbd>4</kbd> mit <kbd>Shift</kbd></td><td>Tempo 1x / 2x / 5x / 10x</td></tr>
 <tr><td><kbd>.</kbd></td><td>Einzelschritt bei Pause</td></tr>
+<tr><td><kbd>V</kbd></td><td>zurueck zum Zeiger-Werkzeug</td></tr>
+<tr><td><kbd>[</kbd> <kbd>]</kbd> / Shift+Mausrad</td><td>Pinselgroesse</td></tr>
+<tr><td>Linke Maustaste mit Werkzeug</td><td>malen (ziehen moeglich)</td></tr>
+<tr><td>Mittlere Maustaste</td><td>Karte ziehen (immer)</td></tr>
 <tr><td><kbd>L</kbd></td><td>Legende ein/aus</td></tr>
 <tr><td><kbd>G</kbd></td><td>Chunk-Raster ein/aus</td></tr>
 <tr><td><kbd>F3</kbd></td><td>Performance-Overlay</td></tr>

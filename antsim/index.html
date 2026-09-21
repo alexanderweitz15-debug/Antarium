@@ -34,8 +34,21 @@
       <button id="btn-legend" class="btn toggle on" title="Legende (Taste L)">Legende</button>
       <button id="btn-help" class="btn toggle" title="Tastenkuerzel (Taste H)">?</button>
     </div>
-    <div id="seedbox" class="seed" title="Seed dieser Welt"></div>
+    <div class="group world-group">
+      <select id="mapselect" class="sel" title="Kartenvorlage"></select>
+      <input id="seedinput" class="inp" size="9" title="Seed der Welt" spellcheck="false">
+      <button id="btn-dice" class="btn" title="Zufaelligen Seed wuerfeln">Wuerfeln</button>
+      <button id="btn-newworld" class="btn" title="Welt mit diesen Einstellungen neu erzeugen">Neue Welt</button>
+    </div>
+    <div id="seedbox" class="seed" title="Version"></div>
   </header>
+
+  <aside id="left">
+    <section id="panel-tools" class="panel">
+      <h2>Werkzeuge <span id="tool-level" class="tiny"></span></h2>
+      <div id="tools" class="panel-body scroll"></div>
+    </section>
+  </aside>
 
   <aside id="right">
     <section id="panel-colonies" class="panel">
@@ -67,6 +80,7 @@
     <h2>Debug</h2>
     <div class="panel-body">
       <button class="btn" data-debug="ants5000">5000 Ameisen spawnen</button>
+      <button class="btn" data-debug="colonies8">8 Kolonien gruenden</button>
       <button class="btn" data-debug="ants1000">+1000 Ameisen</button>
       <button class="btn" data-debug="clear">Ameisen entfernen</button>
       <button class="btn" data-debug="dirty">Alle Chunks neu zeichnen</button>

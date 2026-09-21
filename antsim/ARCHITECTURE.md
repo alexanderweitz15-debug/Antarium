@@ -6,6 +6,10 @@ Vanilla-ES6-Module fuer die Simulation, kein Build-Tool.
 **Stand: Phase 1 abgeschlossen** (Engine, Ebenen, Portale, Kamera, Sprites,
 Chunk-Terrain, Performance-Overlay, Legenden-Grundgeruest).
 
+**Zusaetzlich vorgezogen** (auf ausdrueckliche Anforderung, siehe Abschnitt 12):
+Graben und Nestbau (aus Phase 3), mehrere Kolonien mit eigenen Nest-Ebenen
+(aus Phase 5), Sandbox-Werkzeuge und Kartenvorlagen (aus Phase 9).
+
 ---
 
 ## 1. Start und Projektlage
@@ -23,6 +27,19 @@ npx serve        # oder: npx http-server -p 8123
 
 `file://` funktioniert NICHT (ES-Module und `fetch` des Manifests brauchen
 HTTP). Seed waehlen: `?seed=meinSeed` an die URL haengen.
+
+### Tests
+
+```sh
+node test/sim-bench.mjs          # Simulation ohne Browser: Leistung, Determinismus, Nestbau
+npm i -D playwright              # einmalig, fuer den Browsertest
+npx serve -l 8123 .              # in einem zweiten Terminal
+node test/browser-check.mjs      # 18 Abnahmepruefungen im echten Browser
+```
+
+`test/sim-bench.mjs` laeuft ohne Browser, weil `js/sim/*` weder PixiJS noch
+das DOM kennt. Beide Skripte geben eine Liste "OK/FEHL" aus und enden mit
+Exitcode 1, wenn etwas fehlschlaegt.
 
 ### PixiJS
 
@@ -47,6 +64,8 @@ js/main.js                     Bootstrap, Spielschleife, Eingabe, Fassade
 
 js/sim/  (kennt WEDER PixiJS NOCH das DOM – laeuft auch headless unter Node)
   world.js        Weltaufbau + Tick-Orchestrierung (Zusatz zur Lastenheftliste)
+  construction.js Grabauftraege planen und abarbeiten (vorgezogen aus Phase 3)
+  flowfields.js   Distanzfelder fuer die Navigation im Nest
   levels.js       Level, LevelManager, Chunk-Dirty-Verwaltung, Kamerazustand
   surface.js      Oberflaechen-Grid, Zelltyp-Tabelle, Generator, Eingangsbau
   nest.js         Nest-Grid, Zelltyp- und Kammertabelle, Generator, Grabfunktionen
@@ -69,6 +88,8 @@ js/render/
 
 js/ui/
   hud.js          Obere Leiste, Schalter, Debug-Menue, Hilfe
+  toolbar.js      Spieler-Werkzeuge (ebenenabhaengig)
+  swatch.js       Farbfelder fuer Legende und Werkzeugleiste
   levelNav.js     Ebenen-Reiter + Brotkrumen
   legend.js       Datengetriebene, kontextabhaengige Legende
   panels.js       Kolonieliste
@@ -78,10 +99,10 @@ js/ui/
 ```
 
 Noch nicht vorhanden (kommt in der jeweiligen Phase): `pheromones.js`,
-`flowfields.js`, `fluids.js`, `stability.js`, `food.js`, `nutrition.js`,
-`construction.js`, `combat.js`, `genome.js`, `predators.js`,
-`interventions.js`, `minimap.js`, `pip.js`, `particles.js`, `save.js`,
-`stats.js`, `lineage.js`, `alerts.js`, `nutritionView.js`, `toolbar.js`.
+`fluids.js`, `stability.js`, `food.js`, `nutrition.js`, `combat.js`,
+`genome.js`, `predators.js`, `interventions.js`, `minimap.js`, `pip.js`,
+`particles.js`, `save.js`, `stats.js`, `lineage.js`, `alerts.js`,
+`nutritionView.js`.
 
 `js/sim/world.js` ist eine Ergaenzung zur Dateiliste des Lastenhefts: es
 haelt die Teile zusammen und macht die Simulation ohne Browser testbar
@@ -294,6 +315,97 @@ Was in der Legende steht, sieht also garantiert aus wie im Spiel.
 
 ---
 
+## 8a. Graben und Nestbau (vorgezogen aus Phase 3)
+
+Damit man Ameisen beim Tunnelbau zusehen kann, ist der Bauteil von Phase 3
+bereits enthalten – bewusst in der einfachsten Form, die emergent wirkt:
+
+1. Jede Kolonie fuehrt eine **Warteschlange aus Grabauftraegen** (Zellindizes
+   ihrer Nest-Ebene) in `colony.digQueue`.
+2. **Immer nur der erste offene Auftrag ist die aktive Baustelle**
+   (`colony.digActive`). Alle grabenden Ameisen laufen dorthin, es genuegt
+   also ein einziges Distanzfeld je Nest-Ebene. Das Ergebnis sieht aus wie
+   ein Trupp an der Tunnelbrust.
+3. Jede Ameise in `DIG.REACH` Zellen Abstand steuert `DIG.RATE_PER_ANT`
+   Grabpunkte bei. Sind die Kosten des Zelltyps erreicht
+   (`DIG.COST`, Erde 150 … Wurzel 420), wird die Zelle zu Tunnel bzw.
+   Kammerboden.
+4. Die Ameise, die den letzten Punkt beigesteuert hat, nimmt den **Aushub**
+   mit (`carryType = CARRY.SOIL`), traegt ihn durch das Portal und laedt ihn
+   an der Oberflaeche ab – der Erdhuegel waechst sichtbar mit dem Nest.
+
+**Wann geplant wird.** Alle `DIG.PLAN_INTERVAL` Ticks, versetzt nach
+Kolonie-ID (sonst scannen acht Kolonien im selben Tick), und nur wenn
+`level.airCount < colony.total * DIG.CELLS_PER_ANT`. Geplant wird eines von
+drei Projekten: Schacht nach unten, waagerechter Gang oder Kammer. Der
+Kammertyp richtet sich danach, was der Kolonie noch fehlt.
+
+**Von Hand markierte Auftraege** (Werkzeug "Bauauftrag") liegen oft mitten im
+Erdreich. `Construction.ensureReachable()` legt dann zuerst einen L-foermigen
+Zugang von der naechstgelegenen Luftzelle aus in die Warteschlange; fuehrt
+kein Weg daran vorbei (Fels), gibt es einen Log-Eintrag statt eines still
+haengenden Auftrags.
+
+### Distanzfelder (`flowfields.js`)
+
+Pro Nest-Ebene gibt es zwei Felder als `Uint16Array`:
+
+| Feld | Ziel | wird gebraucht fuer |
+|---|---|---|
+| `entrance` | alle Portalzellen der Ebene | Heimweg, Ausrueckweg |
+| `dig` | Luftnachbarn der aktiven Baustelle | Weg zur Tunnelbrust |
+
+Berechnet per Breitensuche ueber die Luftzellen (4 Nachbarn), rund 0.25 ms
+fuer 200x150 Zellen. Eine Ameise liest nur ihre acht Nachbarzellen und laeuft
+auf die mit dem kleinsten Wert (Diagonalen nur, wenn beide Achsen frei sind).
+Neu gerechnet wird ein Feld nur bei geaenderter `level.airVersion` oder neuem
+Ziel, und hoechstens `DIG.FIELD_BUDGET_PER_TICK` Felder pro Tick ueber ALLE
+Ebenen zusammen.
+
+---
+
+## 8b. Sandbox-Werkzeuge und Kartenvorlagen (vorgezogen aus Phase 9)
+
+**Werkzeugleiste (`ui/toolbar.js`)** – links, ebenenabhaengig. Die Knoepfe
+entstehen aus den Zelltyp-Tabellen und tragen das echte Terrainbild als
+Symbol (`ui/swatch.js` benutzt denselben Maler wie das Spiel).
+
+| Werkzeug | Ebene | Wirkung |
+|---|---|---|
+| Zeiger | beide | Auswaehlen, Eingang anklicken, Karte ziehen |
+| Gras/Erde/Sand/Stein/Wasser/Pflanze/Bluete/Kiesel/Erdhuegel | Oberflaeche | Terrain malen |
+| Tunnel/Erde/Harte Erde/Stein/Kiesel | Nest | sofort graben bzw. zuschuetten |
+| Bauauftrag | Nest | Zellen markieren, die die Kolonie selbst abbaut |
+| Ameisen | beide | Einheiten der gewaehlten Kolonie und Kaste absetzen |
+| Kolonie gruenden | Oberflaeche | neues Volk mit eigener Nest-Ebene und Portal |
+
+Pinselgroesse 1–25 (`[`, `]` oder Shift+Mausrad), Vorschaukreis am Zeiger.
+Mit aktivem Werkzeug malt die linke Maustaste (ziehen moeglich), geschoben
+wird mit der mittleren Taste. Werkzeuge veraendern die Welt nie direkt,
+sondern rufen `World.paint()`, `World.markDigOrders()`, `World.spawnAntsAt()`
+bzw. `World.foundColony()` auf – Weltzustand wird ausschliesslich in der
+Simulationsschicht geaendert. Portalzellen und die Oberflaechenzeile der
+Nest-Ebenen sind gegen Uebermalen geschuetzt.
+
+**Kartenvorlagen (`MAP_PRESETS` in config.js).** Jede Vorlage ueberschreibt
+Werte aus `GEN` und bringt einen Standard-Seed mit:
+
+| Schluessel | Karte |
+|---|---|
+| `wiese` | ausgewogen |
+| `steppe` | trocken, sandig, kaum Wasser |
+| `aue` | feucht, viele Pfuetzen und Pflanzen |
+| `geroell` | steinig, hartes Erdreich, muehsames Graben |
+| `garten` | viele Blueten und Kiesel |
+| `zufall` | Standardparameter, frisch gewuerfelter Seed |
+
+Auswahl und Seed stehen in der Kopfzeile; "Neue Welt" laedt die Seite mit
+`?map=...&seed=...` neu. Das ist Absicht: ein vollstaendiger Neustart ist
+robuster (und schneller geschrieben) als das Abraeumen aller Texturen,
+Sprite-Pools und UI-Bindungen zur Laufzeit.
+
+---
+
 ## 9. Wichtige Konstanten (`js/config.js`)
 
 | Gruppe | Wert | Bedeutung |
@@ -317,6 +429,14 @@ Was in der Legende steht, sieht also garantiert aus wie im Spiel.
 | `RENDER.SPRITE_PX` | 20 | Atlaszelle je Einzelbild |
 | `RENDER.ANT_CELLS` | 1.2 | Koerperlaenge einer Arbeiterin in Zellen |
 | `RENDER.SIZE_EXPONENT` | 0.65 | unterlineare Groessendarstellung |
+| `DIG.COST.soil` | 150 | Grabpunkte fuer eine Erdzelle |
+| `DIG.RATE_PER_ANT` | 1.0 | Grabpunkte je Ameise und Tick |
+| `DIG.CELLS_PER_ANT` | 1.2 | angestrebte Nestgroesse je Ameise |
+| `DIG.PLAN_INTERVAL` | 45 | Ticks zwischen Planungsschritten |
+| `DIG.FIELD_BUDGET_PER_TICK` | 1 | Distanzfelder pro Tick (alle Ebenen) |
+| `TOOLS.BRUSH_DEFAULT` | 3 | Pinselgroesse beim Start |
+| `TOOLS.SPAWN_ANTS` | 15 | Ameisen je Klick mit dem Spawn-Werkzeug |
+| `TOOLS.FOUND_ANTS` | 45 | Startvolk einer per Werkzeug gegruendeten Kolonie |
 
 Kastenwerte (`CASTE_STATS`) und Generatorparameter (`GEN`) liegen ebenfalls
 vollstaendig in `config.js`.
@@ -362,23 +482,24 @@ an Stress). `RNG.gauss()` steht dafuer bereits bereit.
 
 ## 11. Gemessene Performance
 
-Headless unter Node (reine Simulation, ohne Rendering), 5000 Ameisen,
-2 Ebenen, 2000 Ticks:
+Headless unter Node (reine Simulation, ohne Rendering), jeweils 1500 Ticks
+nach 300 Ticks Aufwaermen, inklusive laufendem Nestbau:
 
-| Groesse | Wert |
-|---|---|
-| Tick gesamt | **1.6 ms** (Spitze 3.0 ms) |
-| davon Buckets | 0.22 ms |
-| davon Spatial Hash | 0.07 ms |
-| davon Ameisen | 1.20 ms |
-| Auslastung bei 1x (30 Ticks/s) | ca. 5 % eines Kerns |
-| Auslastung bei 10x (300 Ticks/s) | ca. 47 % eines Kerns |
+| Aufbau | Tick im Mittel | Spitze |
+|---|---|---|
+| 1 Kolonie, 5000 Ameisen, 2 Ebenen | **1.87 ms** | 3.73 ms |
+| 8 Kolonien, 5000 Ameisen, 9 Ebenen | **2.17 ms** | 6.63 ms |
+
+Aufteilung im zweiten Fall: Buckets 0.34 ms, Bau + Distanzfelder 0.03 ms,
+Spatial Hash 0.07 ms, Ameisen 1.81 ms. Das entspricht rund 6.5 % eines Kerns
+bei 1x und 65 % bei 10x.
 
 Im Browser (1280x720, 5000 Ameisen, ca. 2500 sichtbare Sprites):
 Simulation 2.1 ms, Sprite-Vorbereitung 0.7 ms, GPU-Aufruf 1.2 ms
 – zusammen rund **4 ms JavaScript pro Frame**.
 
 Chunk-Neuzeichnen: 0.77 ms (Oberflaeche) bzw. 1.24 ms (Nest) je 64x64-Chunk.
+Breitensuche eines Distanzfeldes: 0.25 ms.
 
 **Einschraenkung:** Die Testumgebung hat keine GPU; Chromium rendert per
 SwiftShader in Software. Die dort gemessenen 5–40 FPS skalieren exakt
@@ -388,6 +509,10 @@ fuellratenbegrenzt. Die 60-FPS-Anforderung auf echter Hardware ist damit
 **nicht gemessen**, sondern nur plausibel (4 ms JS von 16.7 ms Budget).
 Das muss auf einem echten Laptop nachgeprueft werden.
 
+**Determinismus** wurde mit laufendem Nestbau geprueft: zwei Welten mit
+gleichem Seed haben nach 1500 Ticks identische Grids, Ameisenpositionen und
+Grabstatistiken.
+
 ---
 
 ## 12. Phasenstand
@@ -396,13 +521,13 @@ Das muss auf einem echten Laptop nachgeprueft werden.
 |---|---|---|
 | 1 | Engine, Ebenen, Portal, Kamera, Sprites, Chunks, Overlay, Legende | **fertig** |
 | 2 | Pheromone, Sammeln, Ameisenstrassen, Stresstest | offen |
-| 3 | Nest, Graben, Lebenszyklus, Kolonie-KI, Naehrstoffe | offen |
+| 3 | Nest, Graben, Lebenszyklus, Kolonie-KI, Naehrstoffe | **Graben und Kammern fertig**, Rest offen |
 | 4 | Navigation, Minimap, Bild-in-Bild, vollstaendige Legende | offen |
-| 5 | Krieg, Bedrohungsstufen, Raubzuege, Kinomodus | offen |
+| 5 | Krieg, Bedrohungsstufen, Raubzuege, Kinomodus | **mehrere Kolonien mit eigenen Nest-Ebenen fertig**, Kampf offen |
 | 6 | Befestigungen, Stabilitaet, Einstuerze | offen |
 | 7 | Raeuber | offen |
 | 8 | Evolution, Genom, Mutation, Hochzeitsflug | offen |
-| 9 | Goettliche Eingriffe | offen |
+| 9 | Goettliche Eingriffe | **Terrain-, Ameisen- und Koloniewerkzeuge fertig**, Rest offen |
 | 10 | Tag/Nacht, Partikel, Sound, Speichern/Laden, Balancing | offen |
 
 ### Abnahme Phase 1
@@ -415,19 +540,33 @@ Das muss auf einem echten Laptop nachgeprueft werden.
   (50 von 50 beobachteten Ameisen im Nest bewegen sich, waehrend die
   Oberflaeche gezeigt wird).
 
+### Zusaetzlich geprueft (vorgezogene Inhalte)
+
+* Terrain malen aendert Zellen und Chunks werden neu gezeichnet.
+* "Kolonie gruenden" erzeugt Volk, Nest-Ebene, Portal und Reiter in einem Zug.
+* Das Ameisen-Werkzeug setzt Einheiten der gewaehlten Kolonie und Kaste ab.
+* Die Werkzeugleiste wechselt beim Ebenenwechsel den Werkzeugsatz.
+* Ein von Hand markierter Bauauftrag mitten im Erdreich wird ueber einen
+  selbst gegrabenen Zugang tatsaechlich abgebaut.
+* Die Kolonie erweitert ihr Nest ohne Eingriff: 152 Zellen in 100 Sekunden,
+  dabei waechst der Erdhuegel an der Oberflaeche von 47 auf 130 Zellen und es
+  entstehen Brut-, Vorrats-, Wach- und Fluchtkammern.
+* Kartenvorlagen wirken (Geroellhang: 7309 Steinzellen statt rund 1500).
+
 ---
 
 ## 13. Bekannte Probleme und bewusste Vereinfachungen
 
 1. **60 FPS auf echter Hardware nicht gemessen** (siehe Abschnitt 11).
-2. **Ameisenverhalten ist ein Platzhalter.** In Phase 1 wechseln Ameisen
-   zwischen Erkunden (Zufallslauf) und Heimkehren (Kurs auf das naechste
-   eigene Portal). Das erzeugt sichtbaren Portalverkehr, ist aber bewusst
-   keine emergente Futtersuche – Pheromone (Phase 2) und Aufgabenwahl
-   (Phase 3) ersetzen es vollstaendig.
+2. **Das Verhalten an der Oberflaeche ist ein Platzhalter.** Dort wechseln
+   Ameisen zwischen Erkunden (Zufallslauf) und Heimkehren (Kurs auf das
+   naechste eigene Portal). Das erzeugt sichtbaren Portalverkehr, ist aber
+   bewusst keine emergente Futtersuche – Pheromone (Phase 2) ersetzen es
+   vollstaendig. Im Nest laeuft die Navigation dagegen schon ueber
+   Distanzfelder.
 3. **Kollision ist achsenweise und grob.** Bei Blockade dreht die Ameise um
    0.7 rad. In 1–2 Zellen breiten Schaechten fuehrt das zu leichtem Zickzack.
-   Mit den Flow Fields aus Phase 3 verschwindet das.
+   Das Distanzfeld entschaerft es, beseitigt es aber nicht ganz.
 4. **Speicherbedarf der Chunk-Texturen** waechst mit der Zahl der Nest-Ebenen
    (rund 1.9 MB je Nest, 10 MB Oberflaeche; bei 12 Nestern also ca. 33 MB
    GPU-Speicher). Ab Phase 5 sollten Texturen nicht aktiver Ebenen verworfen
@@ -442,5 +581,17 @@ Das muss auf einem echten Laptop nachgeprueft werden.
 7. **Die Konsole meldet einen Netzfehler**, wenn das CDN nicht erreichbar ist,
    bevor der Vendor-Fallback greift. Das laesst sich nicht vermeiden, ohne
    den CDN-Pfad aufzugeben.
-8. **Keine Bruttiere, keine Nahrung, keine Vorraete** – die Felder dafuer
+8. **Keine Brut, keine Nahrung, keine Vorraete** – die Felder dafuer
    existieren bereits in `Colony` und `Ants`, sind aber noch unbenutzt.
+   Kolonien wachsen deshalb nicht von selbst; Nachschub kommt nur ueber das
+   Ameisen-Werkzeug. Das kommt mit Phase 3.
+9. **Kolonien sind einander noch gleichgueltig.** Rote und blaue Ameisen
+   laufen durcheinander, ohne zu kaempfen. Das Kampfsystem ist Phase 5.
+10. **Die Kolonie graebt nur, solange sie Platz braucht.** Erreicht das Nest
+   `colony.total * DIG.CELLS_PER_ANT` Luftzellen, ruht der Bau. Ohne
+   Bevoelkerungswachstum (Phase 3) bleibt es dann dabei – mit dem Werkzeug
+   "Bauauftrag" oder mehr Ameisen geht es sofort weiter.
+11. **"Neue Welt" laedt die Seite neu.** Ein Neustart im laufenden Betrieb
+   muesste alle Chunk-Texturen, Sprite-Pools und UI-Bindungen abraeumen; der
+   Reload ist robuster. Der aktuelle Stand geht dabei verloren (Speichern
+   kommt in Phase 10).

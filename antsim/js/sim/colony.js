@@ -54,6 +54,8 @@ export class Colony {
     this.threat = 0;
     /** Bereits aufgetretene Kasten (Set von Kasten-IDs) fuer die Legende. */
     this.knownCastes = new Set();
+    /** Ameisen, die gerade graben (jeden Tick neu gezaehlt). */
+    this.diggers = 0;
   }
 
   get name() { return this.baseName + ' ' + roman(this.generation); }
@@ -64,11 +66,13 @@ export class Colony {
     this.population.fill(0);
     this.populationByLevel.clear();
     this.total = 0;
+    this.diggers = 0;
   }
 
-  countAnt(casteId, levelId) {
+  countAnt(casteId, levelId, isDigging) {
     this.population[casteId]++;
     this.total++;
+    if (isDigging) this.diggers++;
     this.knownCastes.add(casteId);
     this.populationByLevel.set(levelId, (this.populationByLevel.get(levelId) || 0) + 1);
   }

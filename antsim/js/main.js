@@ -10,7 +10,7 @@
  *   letzten Tick (alpha), damit die Bewegung auch bei 1x fluessig aussieht.
  */
 
-import { SIM, WORLD, CAMERA, TRANSITION, COLONY } from './config.js';
+import { SIM, WORLD, CAMERA, TRANSITION, COLONY, MAP_PRESETS, mapPreset } from './config.js';
 import { World } from './sim/world.js';
 import { LEVEL_KIND } from './sim/levels.js';
 import { bus, CAT } from './sim/events.js';
@@ -25,8 +25,16 @@ import { EventLogView } from './ui/log.js';
 import { Hud } from './ui/hud.js';
 import { Inspector } from './ui/inspector.js';
 import { ColonyPanel } from './ui/panels.js';
+import { Toolbar } from './ui/toolbar.js';
 
 const $ = (id) => document.getElementById(id);
+
+/** Kurzer, gut lesbarer Zufalls-Seed fuer neue Welten. */
+function randomSeed() {
+  const a = ['moos', 'harz', 'kiesel', 'wurzel', 'tau', 'lehm', 'ginster', 'farn', 'dorn', 'klee'];
+  const i = Math.floor(Math.random() * a.length);
+  return a[i] + '-' + Math.floor(Math.random() * 9000 + 1000);
+}
 
 // ---------------------------------------------------------------------------
 // Fehler sichtbar machen – eine leere schwarze Seite hilft niemandem.
@@ -48,10 +56,12 @@ window.addEventListener('unhandledrejection', (e) => { if (!window.__booted) boo
 // ---------------------------------------------------------------------------
 async function boot() {
   const params = new URLSearchParams(location.search);
-  const seed = params.get('seed') || 'formica-1';
+  const mapKey = params.get('map') || 'wiese';
+  const preset = mapPreset(mapKey);
+  const seed = params.get('seed') || preset.seed || randomSeed();
 
   // --- Welt ----------------------------------------------------------------
-  const world = new World(seed).generate();
+  const world = new World(seed, preset.key).generate();
 
   // --- Grafik --------------------------------------------------------------
   const sprites = await new SpriteBank().load();
@@ -166,6 +176,21 @@ async function boot() {
       });
     },
     gotoSurface() { game.gotoLevel(world.levels.surface.id); },
+    /** Neue Welt mit den Einstellungen aus der Kopfzeile (Neuladen). */
+    newWorld(mapKeyIn, seedIn) {
+      const p = new URLSearchParams();
+      p.set('map', mapKeyIn);
+      if (seedIn) p.set('seed', seedIn);
+      location.search = p.toString();
+    },
+    /** Wird aufgerufen, wenn per Werkzeug eine Kolonie gegruendet wurde. */
+    onColonyFounded(colony) {
+      for (const level of world.levels.levels) renderer.addLevel(level);
+      levelNav.rebuild(world);
+      levelNav.update(world);
+      legend.signature = '';
+      colonyPanel.signature = '';
+    },
     debugAction(what) {
       if (what === 'ants5000') {
         const missing = Math.max(0, 5000 - world.ants.count);
@@ -181,6 +206,11 @@ async function boot() {
       } else if (what === 'dirty') {
         for (const l of world.levels.levels) l.markAllDirty();
         bus.logEvent(CAT.SYS, 'Alle Chunks neu gezeichnet (Debug)', { tick: world.tick });
+      } else if (what === 'colonies8') {
+        let n = 0;
+        while (world.colonies.colonies.length < 8 && world.foundColony(null, 120)) n++;
+        if (n) game.onColonyFounded();
+        bus.logEvent(CAT.SYS, n + ' Kolonien gegruendet (Debug)', { tick: world.tick });
       }
     },
   };
@@ -192,6 +222,7 @@ async function boot() {
   const logView = new EventLogView($('log'), $('log-filters'), game);
   const inspector = new Inspector($('tip'), $('inspector'), $('inspector-body'), world, sprites);
   const colonyPanel = new ColonyPanel($('colonies'), world, sprites, game);
+  const toolbar = new Toolbar($('tools'), world, sprites, game);
   const hud = new Hud({
     speed: $('speed'), step: $('btn-step'), grid: $('btn-grid'), trans: $('btn-trans'),
     legendBtn: $('btn-legend'), help: $('btn-help'), helpPanel: $('help'),
@@ -199,12 +230,37 @@ async function boot() {
   }, game);
   levelNav.rebuild(world);
   levelNav.update(world);
+  toolbar.refresh();
   hud.update(state);
+
+  // --- Kartenvorlage und Seed in der Kopfzeile -----------------------------
+  const mapSel = $('mapselect');
+  for (const p of MAP_PRESETS) {
+    const o = document.createElement('option');
+    o.value = p.key;
+    o.textContent = p.name;
+    o.title = p.desc;
+    if (p.key === preset.key) o.selected = true;
+    mapSel.appendChild(o);
+  }
+  mapSel.title = preset.desc;
+  const seedInput = $('seedinput');
+  seedInput.value = world.seed;
+  mapSel.addEventListener('change', () => {
+    const p = mapPreset(mapSel.value);
+    mapSel.title = p.desc;
+    seedInput.value = p.seed || randomSeed();
+  });
+  $('btn-dice').addEventListener('click', () => { seedInput.value = randomSeed(); });
+  $('btn-newworld').addEventListener('click', () => game.newWorld(mapSel.value, seedInput.value.trim()));
+  seedInput.addEventListener('keydown', (e) => {
+    if (e.code === 'Enter') game.newWorld(mapSel.value, seedInput.value.trim());
+  });
 
   // --- Eingabe -------------------------------------------------------------
   const canvas = $('stage');
   const keys = new Set();
-  const pointer = { down: false, button: 0, dragged: false, moved: false, x: 0, y: 0, sx: 0, sy: 0 };
+  const pointer = { down: false, button: 0, dragged: false, moved: false, painting: false, x: 0, y: 0, sx: 0, sy: 0 };
   const cellUnder = { x: 0, y: 0 };
 
   function updateCellUnderPointer() {
@@ -217,7 +273,17 @@ async function boot() {
     pointer.dragged = false;
     pointer.sx = e.clientX;
     pointer.sy = e.clientY;
+    pointer.x = e.clientX;
+    pointer.y = e.clientY;
+    pointer.moved = true;
     canvas.setPointerCapture(e.pointerId);
+    // Mit aktivem Werkzeug malt die linke Maustaste, geschoben wird mit der
+    // mittleren Taste. Mit dem Zeiger schiebt auch die linke Taste.
+    pointer.painting = e.button === 0 && toolbar.isPaintTool;
+    if (pointer.painting) {
+      camera.screenToCell(e.clientX, e.clientY, cellUnder);
+      toolbar.apply(cellUnder, false);
+    }
   });
 
   canvas.addEventListener('pointermove', (e) => {
@@ -227,7 +293,10 @@ async function boot() {
     if (pointer.down) {
       const dx = e.clientX - pointer.sx, dy = e.clientY - pointer.sy;
       if (!pointer.dragged && Math.hypot(dx, dy) > 4) pointer.dragged = true;
-      if (pointer.dragged) {
+      if (pointer.painting) {
+        camera.screenToCell(e.clientX, e.clientY, cellUnder);
+        toolbar.apply(cellUnder, true);
+      } else if (pointer.dragged) {
         camera.panScreen(e.movementX, e.movementY);
         camera.followAnt = -1;
       }
@@ -235,8 +304,11 @@ async function boot() {
   });
 
   canvas.addEventListener('pointerup', (e) => {
-    if (pointer.down && !pointer.dragged && e.button === 0) handleClick(e.clientX, e.clientY);
+    if (pointer.down && !pointer.dragged && !pointer.painting && e.button === 0) {
+      handleClick(e.clientX, e.clientY);
+    }
     pointer.down = false;
+    pointer.painting = false;
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
   });
 
@@ -244,6 +316,7 @@ async function boot() {
 
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
+    if (e.shiftKey) { toolbar.setBrush(toolbar.brush + (e.deltaY < 0 ? 2 : -2)); return; }
     const f = e.deltaY < 0 ? CAMERA.ZOOM_STEP : 1 / CAMERA.ZOOM_STEP;
     camera.zoomAt(e.clientX, e.clientY, f);
     if (state.chunkGrid) renderer.setChunkGrid(true);
@@ -276,7 +349,14 @@ async function boot() {
     keys.add(e.code);
     switch (e.code) {
       case 'Space': e.preventDefault(); game.togglePause(); break;
-      case 'Escape': case 'Backspace': game.gotoSurface(); break;
+      case 'Escape': case 'Backspace':
+        // Erst das Werkzeug zuruecknehmen, dann zur Oberflaeche.
+        if (toolbar.isPaintTool) { toolbar.setTool('select'); break; }
+        game.gotoSurface();
+        break;
+      case 'KeyV': toolbar.setTool('select'); break;
+      case 'BracketLeft': toolbar.setBrush(toolbar.brush - 2); break;
+      case 'BracketRight': toolbar.setBrush(toolbar.brush + 2); break;
       case 'Period': game.step(); break;
       case 'KeyL': game.togglePanel('legend'); break;
       case 'KeyH': game.togglePanel('help'); break;
@@ -347,6 +427,17 @@ async function boot() {
       accumulator = 0;
     }
 
+    // Pinselvorschau folgt dem Zeiger
+    if (toolbar.isPaintTool && pointer.moved && !transition.active) {
+      camera.screenToCell(pointer.x, pointer.y, cellUnder);
+      const colony = world.colonies.get(toolbar.colonyId);
+      renderer.setBrushPreview(cellUnder.x, cellUnder.y, toolbar.brush,
+        toolbar.current.kind === 'ants' || toolbar.current.kind === 'colony'
+          ? (colony ? colony.color : 0xffffff) : 0x9ee6a8);
+    } else {
+      renderer.setBrushPreview(0, 0, -1, 0);
+    }
+
     const alpha = speed > 0 ? Math.min(1, accumulator / SIM.TICK_MS) : 1;
     renderFrame(alpha);
 
@@ -360,6 +451,8 @@ async function boot() {
       uiTimer = 0;
       levelNav.rebuild(world);
       levelNav.update(world);
+      toolbar.refresh();
+      $('tool-level').textContent = world.levels.active.kind === 0 ? 'Oberflaeche' : 'Nest';
       colonyPanel.refresh();
       legend.refresh(world, camera.visibleCells(0));
       logView.render();

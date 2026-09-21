@@ -93,6 +93,12 @@ export class Renderer {
       this._casteScale[c.id] = baseScale * Math.pow(c.size, RENDER.SIZE_EXPONENT);
     }
 
+    // Pinselvorschau (liegt ueber den Einheiten)
+    this.brushG = new PIXI.Graphics();
+    this.brushG.visible = false;
+    this.worldRoot.addChild(this.brushG);
+    this._brush = { x: -1, y: -1, r: -1, color: 0 };
+
     this.selectSprite = new PIXI.Sprite(this.sprites.get('marker_select').textures[0]);
     this.selectSprite.anchor.set(0.5);
     this.selectSprite.visible = false;
@@ -341,6 +347,23 @@ export class Renderer {
     const sc = (this._casteScale[ants.caste[antIndex]] * ants.phenoSize[antIndex]) * 1.8;
     this.selectSprite.scale.set(sc);
     this.selectSprite.tint = 0xffffff;
+  }
+
+  /**
+   * Pinselvorschau setzen (Zellkoordinaten). radius entspricht der
+   * Pinselgroesse aus der Werkzeugleiste; -1 blendet sie aus.
+   */
+  setBrushPreview(cx, cy, radius, color) {
+    if (radius < 0) { this.brushG.visible = false; return; }
+    this.brushG.visible = true;
+    const b = this._brush;
+    if (b.x === cx && b.y === cy && b.r === radius && b.color === color) return;
+    b.x = cx; b.y = cy; b.r = radius; b.color = color;
+    const cs = WORLD.CELL_SIZE;
+    const r = (Math.max(0, radius - 1) + 0.7) * cs;
+    this.brushG.clear();
+    this.brushG.circle((cx + 0.5) * cs, (cy + 0.5) * cs, r)
+      .stroke({ width: Math.max(0.5, 1.5 / this.camera.zoom), color, alpha: 0.9 });
   }
 
   /** Alphawert der Uebergangsblende (0..1). */

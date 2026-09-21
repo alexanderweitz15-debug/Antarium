@@ -46,9 +46,10 @@ export const SURFACE_CELL_DEFS = [
 /**
  * Erzeugt die Oberflaechen-Ebene.
  * @param {import('../rng.js').RNG} rng
+ * @param {object} [gen] Generatorparameter (Kartenvorlage), sonst GEN.SURFACE
  * @returns {Level}
  */
-export function createSurface(rng) {
+export function createSurface(rng, gen) {
   const level = new Level({
     kind: LEVEL_KIND.SURFACE,
     w: WORLD.SURFACE_W,
@@ -56,13 +57,13 @@ export function createSurface(rng) {
     name: 'Oberflaeche',
   });
   level.setCellDefs(SURFACE_CELL_DEFS);
-  generateSurface(level, rng);
+  generateSurface(level, rng, gen);
   return level;
 }
 
 /** Deterministische Terraingenerierung aus dem Seed. */
-export function generateSurface(level, rng) {
-  const s = GEN.SURFACE;
+export function generateSurface(level, rng, gen) {
+  const s = gen || GEN.SURFACE;
   // Seeds fuer die einzelnen Rauschfelder – aus dem RNG, damit der Weltseed wirkt.
   const seedBiome = rng.int(1 << 30);
   const seedDetail = rng.int(1 << 30);

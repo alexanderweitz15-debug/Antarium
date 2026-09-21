@@ -15,9 +15,10 @@
  * (Phase 2) und Aufgabenwahl (Phase 3) es ersetzen werden.
  */
 
-import { ANTS, LIMITS, PORTALS } from '../config.js';
+import { ANTS, LIMITS, PORTALS, DIG } from '../config.js';
 import { LEVEL_KIND } from './levels.js';
 import { CASTE, casteDef } from './castes.js';
+import { dumpSoil } from './surface.js';
 
 /** Zustandsmaschine. Phase 1 nutzt IDLE/EXPLORE/RETURN/TRANSIT. */
 export const ANT_STATE = {
@@ -46,6 +47,23 @@ export const ANT_STATE_LABEL = {
   5: 'Graebt', 6: 'Baut', 7: 'Repariert', 8: 'Pflegt Brut', 9: 'Melkt Blattlaeuse',
   10: 'Haelt Wache', 11: 'Patrouilliert', 12: 'Greift an', 13: 'Verteidigt',
   14: 'Flieht', 15: 'Evakuiert Brut', 16: 'Traegt Verwundete', 17: 'Blockiert Eingang',
+};
+
+/** Was eine Ameise tragen kann. */
+export const CARRY = {
+  NONE: 0,
+  SOIL: 1,      // Aushub -> wird an der Oberflaeche zum Erdhuegel
+  FOOD: 2,      // ab Phase 2/3
+  BROOD: 3,
+  PEBBLE: 4,
+  RESIN: 5,
+  WOUNDED: 6,
+  DEAD: 7,
+};
+
+export const CARRY_LABEL = {
+  0: '-', 1: 'Aushub', 2: 'Nahrung', 3: 'Brut', 4: 'Kiesel', 5: 'Harz',
+  6: 'Verwundete', 7: 'Toten',
 };
 
 const TWO_PI = Math.PI * 2;
@@ -120,6 +138,8 @@ export class Ants {
 
     /** @type {Map<number, {ids:Int32Array, count:number}>} */
     this.buckets = new Map();
+    /** Wiederverwendetes Hilfsobjekt (keine Allokation im Tick). */
+    this._tmp = { x: 0, y: 0 };
   }
 
   /** Ebene fuer die Bucket-Verwaltung anmelden. */
@@ -203,7 +223,7 @@ export class Ants {
       if (b) b.ids[b.count++] = i;
       if (colonyManager) {
         const c = colonyManager.get(this.colony[i]);
-        if (c) c.countAnt(this.caste[i], lv);
+        if (c) c.countAnt(this.caste[i], lv, this.state[i] === ANT_STATE.DIG);
       }
     }
     for (const lvl of levelManager.levels) {
@@ -233,6 +253,8 @@ export class Ants {
     const b = this.buckets.get(level.id);
     if (!b) return;
     const rng = ctx.rng;
+    const isNest = level.kind === LEVEL_KIND.NEST;
+    const fields = isNest && ctx.fields ? ctx.fields.get(level.id) : null;
     const maxX = level.w - 0.25;
     const maxY = level.h - 0.25;
 
@@ -256,21 +278,73 @@ export class Ants {
         continue;
       }
 
-      // ---- Zustandslogik (Phase-1-Platzhalter) --------------------------
       if (this.timer[i] > 0) this.timer[i]--;
+      const colony = ctx.colonies ? ctx.colonies.get(this.colony[i]) : null;
 
-      if (this.state[i] === ANT_STATE.EXPLORE) {
-        this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
-        if (this.timer[i] === 0) this._beginReturn(level, i, ctx);
-      } else if (this.state[i] === ANT_STATE.RETURN) {
-        const tx = this.targetX[i], ty = this.targetY[i];
-        if (tx < 0) {
-          this.state[i] = ANT_STATE.EXPLORE;
-          this.timer[i] = rng.intRange(ANTS.EXPLORE_TICKS_MIN, ANTS.EXPLORE_TICKS_MAX);
-        } else {
+      // ---- Zustandslogik -------------------------------------------------
+      switch (this.state[i]) {
+        case ANT_STATE.EXPLORE:
+          // Im Nest: Grabauftrag annehmen, wenn die Kolonie einen hat und
+          // noch nicht genug Ameisen daran arbeiten.
+          if (isNest && colony && colony.digActive >= 0 && this.caste[i] === CASTE.WORKER
+              && this.carryType[i] === CARRY.NONE
+              && colony.diggers < Math.max(4, (colony.populationByLevel.get(level.id) || 0) * DIG.DIGGER_SHARE)
+              && rng.chance(0.06)) {
+            this.state[i] = ANT_STATE.DIG;
+            this.timer[i] = DIG.JOB_TIMEOUT;
+            colony.diggers++;
+            break;
+          }
+          this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+          if (this.timer[i] === 0) this._beginReturn(level, i, ctx);
+          break;
+
+        case ANT_STATE.DIG: {
+          if (!colony || colony.digActive < 0 || this.timer[i] === 0) {
+            this.state[i] = ANT_STATE.EXPLORE;
+            this.timer[i] = rng.intRange(ANTS.NEST_STAY_MIN, ANTS.NEST_STAY_MAX);
+            break;
+          }
+          const tx = (colony.digActive % level.w) + 0.5;
+          const ty = ((colony.digActive / level.w) | 0) + 0.5;
+          const dx = tx - this.x[i], dy = ty - this.y[i];
+          const d2 = dx * dx + dy * dy;
+          if (d2 <= DIG.REACH * DIG.REACH) {
+            // An der Tunnelbrust: graben statt laufen.
+            this.dir[i] = Math.atan2(dy, dx);
+            this.anim[i] += 0.35;
+            const done = ctx.construction.contribute(colony, level, DIG.RATE_PER_ANT);
+            if (done >= 0) {
+              // Wer den letzten Spatenstich macht, traegt den Aushub weg.
+              this.carryType[i] = CARRY.SOIL;
+              this.carryAmount[i] = 1;
+              this._beginReturn(level, i, ctx);
+            }
+            continue; // keine Bewegung in diesem Tick
+          }
+          if (!fields || !this._steerField(level, i, fields.dig, rng)) {
+            this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+          }
+          break;
+        }
+
+        case ANT_STATE.RETURN: {
+          const tx = this.targetX[i], ty = this.targetY[i];
+          if (tx < 0) {
+            this.state[i] = ANT_STATE.EXPLORE;
+            this.timer[i] = rng.intRange(ANTS.EXPLORE_TICKS_MIN, ANTS.EXPLORE_TICKS_MAX);
+            break;
+          }
+          // Im Nest ueber das Distanzfeld, an der Oberflaeche direkt steuern.
+          if (isNest && fields && this._steerField(level, i, fields.entrance, rng)) break;
           const want = Math.atan2(ty + 0.5 - this.y[i], tx + 0.5 - this.x[i]);
           this.dir[i] += angleDelta(this.dir[i], want) * ANTS.STEER_GAIN + rng.range(-0.08, 0.08);
+          break;
         }
+
+        default:
+          this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+          break;
       }
 
       this._move(level, i, 1, maxX, maxY, rng);
@@ -282,6 +356,19 @@ export class Ants {
         if (p !== null) this._tryEnter(level, i, p, ctx);
       }
     }
+  }
+
+  /**
+   * Einer Distanzfeld-Richtung folgen.
+   * @returns {boolean} false, wenn das Feld an dieser Stelle nichts weiss
+   */
+  _steerField(level, i, field, rng) {
+    if (!field || !field.valid) return false;
+    const n = field.next(level, this.x[i] | 0, this.y[i] | 0, this._tmp);
+    if (!n) return false;
+    const want = Math.atan2(n.y + 0.5 - this.y[i], n.x + 0.5 - this.x[i]);
+    this.dir[i] += angleDelta(this.dir[i], want) * 0.5 + rng.range(-0.05, 0.05);
+    return true;
   }
 
   /** Bewegung mit achsenweiser Kollision; liefert die gelaufene Distanz. */
@@ -349,9 +436,20 @@ export class Ants {
     // In ein Nest geht es nach unten, an die Oberflaeche in eine Zufallsrichtung.
     this.dir[i] = destLevel && destLevel.kind === LEVEL_KIND.NEST ? Math.PI / 2 : ctx.rng.angle();
     this.state[i] = ANT_STATE.EXPLORE;
-    this.timer[i] = destLevel && destLevel.kind === LEVEL_KIND.NEST
-      ? ctx.rng.intRange(ANTS.NEST_STAY_MIN, ANTS.NEST_STAY_MAX)
-      : ctx.rng.intRange(ANTS.EXPLORE_TICKS_MIN, ANTS.EXPLORE_TICKS_MAX);
+
+    const toNest = destLevel && destLevel.kind === LEVEL_KIND.NEST;
+    if (!toNest && this.carryType[i] === CARRY.SOIL) {
+      // Aushub landet als Erdhuegel neben dem Eingang – der Huegel waechst
+      // sichtbar mit dem Tunnelsystem.
+      dumpSoil(destLevel, portal.ax, portal.ay, ctx.rng);
+      this.carryType[i] = CARRY.NONE;
+      this.carryAmount[i] = 0;
+      this.timer[i] = ctx.rng.intRange(DIG.DUMP_STAY[0], DIG.DUMP_STAY[1]);
+    } else {
+      this.timer[i] = toNest
+        ? ctx.rng.intRange(ANTS.NEST_STAY_MIN, ANTS.NEST_STAY_MAX)
+        : ctx.rng.intRange(ANTS.EXPLORE_TICKS_MIN, ANTS.EXPLORE_TICKS_MAX);
+    }
     this.transit[i] = 0;
     this.portalRef[i] = -1;
     this.portalCooldown[i] = PORTALS.REENTRY_COOLDOWN;

@@ -71,6 +71,14 @@ export class Level {
     // --- Laufzeitstatistik ------------------------------------------------
     this.antCount = 0;
     this.simMs = 0;
+
+    /**
+     * Zaehler fuer Aenderungen an den begehbaren Zellen. Flow Fields
+     * vergleichen ihn mit ihrem eigenen Stand und rechnen nur dann neu.
+     */
+    this.airVersion = 0;
+    /** Anzahl begehbarer Zellen (nur Nest-Ebenen fuehren ihn mit). */
+    this.airCount = 0;
   }
 
   /** @param {Array} defs Array von Zelltyp-Definitionen (Index = Zelltyp-ID). */
@@ -92,12 +100,23 @@ export class Level {
     return this.cells[y * this.w + x];
   }
 
-  /** Zelltyp setzen und den betroffenen Chunk als dirty markieren. */
+  /**
+   * Zelltyp setzen, Chunk als dirty markieren und – falls sich dadurch die
+   * Begehbarkeit aendert – airVersion erhoehen, damit Flow Fields neu
+   * gerechnet werden.
+   */
   set(x, y, v) {
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return;
     const i = y * this.w + x;
-    if (this.cells[i] === v) return;
+    const old = this.cells[i];
+    if (old === v) return;
     this.cells[i] = v;
+    const wasAir = this.solidTable[old] === 0;
+    const isAir = this.solidTable[v] === 0;
+    if (wasAir !== isAir) {
+      this.airVersion++;
+      this.airCount += isAir ? 1 : -1;
+    }
     this.markDirtyAt(x, y);
   }
 

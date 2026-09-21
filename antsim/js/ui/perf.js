@@ -19,7 +19,7 @@ export class PerfOverlay {
     this.tickMs = 0;
     this.lastUpdate = 0;
     this.ticksThisFrame = 0;
-    this.sysMs = { buckets: 0, spatial: 0, ants: 0 };
+    this.sysMs = { buckets: 0, build: 0, spatial: 0, ants: 0 };
     this.levelMs = new Map();
   }
 
@@ -37,6 +37,7 @@ export class PerfOverlay {
     if (ticks > 0) {
       this.tickMs = this.tickMs * k + world.perf.total * (1 - k);
       this.sysMs.buckets = this.sysMs.buckets * k + world.perf.buckets * (1 - k);
+      this.sysMs.build = this.sysMs.build * k + world.perf.build * (1 - k);
       this.sysMs.spatial = this.sysMs.spatial * k + world.perf.spatial * (1 - k);
       this.sysMs.ants = this.sysMs.ants * k + world.perf.ants * (1 - k);
       for (const [id, ms] of world.perf.levels) {
@@ -62,6 +63,7 @@ export class PerfOverlay {
     L.push('  gesamt      ' + pad(this.tickMs.toFixed(3), 7) + ' ms  = '
       + pad((this.tickMs / SIM.TICK_MS * 100).toFixed(1), 5) + ' % eines Ticks');
     L.push('  Buckets     ' + pad(this.sysMs.buckets.toFixed(3), 7) + ' ms');
+    L.push('  Bau+Felder  ' + pad(this.sysMs.build.toFixed(3), 7) + ' ms');
     L.push('  SpatialHash ' + pad(this.sysMs.spatial.toFixed(3), 7) + ' ms');
     L.push('  Ameisen     ' + pad(this.sysMs.ants.toFixed(3), 7) + ' ms');
     L.push('');
@@ -70,7 +72,8 @@ export class PerfOverlay {
       const ms = this.levelMs.get(level.id) || 0;
       L.push('  ' + (level.id === world.levels.activeId ? '>' : ' ') + pad(level.name, 14)
         + pad(level.antCount, 6) + ' A  ' + pad(ms.toFixed(3), 7) + ' ms'
-        + '  dirty ' + level.dirtyCount);
+        + '  dirty ' + level.dirtyCount
+        + (level.kind === 1 ? '  Luft ' + level.airCount : ''));
     }
     L.push('');
     L.push('Rendering');
@@ -83,6 +86,8 @@ export class PerfOverlay {
     L.push('  Portale     ' + world.portals.portals.length + ', im Schacht '
       + world.portals.portals.reduce((s, p) => s + p.inTransit, 0)
       + ', Durchgaenge ' + world.totalPassages);
+    L.push('  Gegraben    ' + world.totalDug + ' Zellen, offene Auftraege '
+      + world.colonies.colonies.reduce((s, c) => s + (c.digQueue ? c.digQueue.length : 0), 0));
     L.push('');
     L.push('PixiJS ' + PIXI_VERSION + ' (' + pixiSource + ')   Seed "' + world.seed + '"');
 

@@ -241,3 +241,104 @@ export const CASTE_STATS = {
   scout:   { size: 0.9, hp: 0.8,  speed: 1.80, damage: 0.2 },
   titan:   { size: 3.0, hp: 15.0, speed: 0.35, damage: 5.0 },
 };
+
+// ---------------------------------------------------------------------------
+// GRABEN UND NESTBAU
+// Vorgezogen aus Phase 3, damit man Ameisen beim Tunnelbau zusehen kann.
+// Kosten sind "Grabpunkte"; eine Ameise bringt RATE_PER_ANT Punkte pro Tick.
+// ---------------------------------------------------------------------------
+export const DIG = {
+  /** Ticks zwischen zwei Planungsschritten der Kolonie. */
+  PLAN_INTERVAL: 45,
+  /** Unter dieser Warteschlangenlaenge plant die Kolonie neu. */
+  MIN_QUEUE: 5,
+  /** Obergrenze offener Grabauftraege je Kolonie. */
+  MAX_QUEUE: 400,
+  /** Grabaufwand je Zelltyp (Punkte). */
+  COST: { soil: 150, hardsoil: 380, pebble: 300, root: 420, debris: 60 },
+  /** Grabpunkte, die eine Arbeiterin pro Tick beisteuert. */
+  RATE_PER_ANT: 1.0,
+  /** Aus dieser Entfernung (Zellen) kann gegraben werden. */
+  REACH: 1.7,
+  /** Anteil der Ameisen im Nest, die sich am Graben beteiligen. */
+  DIGGER_SHARE: 0.6,
+  /** Wie viele Zellen Nest je Ameise der Kolonie angestrebt werden. */
+  CELLS_PER_ANT: 1.2,
+  /** Mindestgroesse, unter der immer weitergegraben wird. */
+  MIN_NEST_CELLS: 60,
+  /** Wahrscheinlichkeit, dass ein neues Projekt eine Kammer wird. */
+  CHAMBER_CHANCE: 0.38,
+  /** Laengenbereiche neuer Projekte. */
+  SHAFT_LEN: [6, 16],
+  TUNNEL_LEN: [8, 24],
+  CHAMBER_RX: [4, 8],
+  CHAMBER_RY: [3, 5],
+  /** Mindestabstand zum unteren Kartenrand. */
+  BOTTOM_MARGIN: 6,
+  /** Flow Fields, die pro Tick hoechstens neu berechnet werden. */
+  FIELD_BUDGET_PER_TICK: 1,
+  /** Ticks, die eine Ameise hoechstens an einem Grabauftrag haengt. */
+  JOB_TIMEOUT: 900,
+  /** Ticks, die eine Ameise nach dem Abladen an der Oberflaeche bleibt. */
+  DUMP_STAY: [60, 200],
+};
+
+// ---------------------------------------------------------------------------
+// SPIELER-WERKZEUGE (Sandbox)
+// ---------------------------------------------------------------------------
+export const TOOLS = {
+  BRUSH_MIN: 1,
+  BRUSH_MAX: 25,
+  BRUSH_DEFAULT: 3,
+  /** Ameisen pro Klick mit dem Spawn-Werkzeug. */
+  SPAWN_ANTS: 15,
+  /** Startpopulation einer per Werkzeug gegruendeten Kolonie. */
+  FOUND_ANTS: 45,
+};
+
+// ---------------------------------------------------------------------------
+// KARTENVORLAGEN
+// Jede Vorlage ueberschreibt Werte aus GEN. "seed: null" = Seed frei waehlbar.
+// ---------------------------------------------------------------------------
+export const MAP_PRESETS = [
+  {
+    key: 'wiese', name: 'Wiese', seed: 'formica-1',
+    desc: 'Ausgewogen: viel Gras, verstreute Erdflecken, einzelne Pfuetzen.',
+    surface: {},
+    nest: {},
+  },
+  {
+    key: 'steppe', name: 'Steppe', seed: 'steppe-1',
+    desc: 'Trocken und sandig, kaum Wasser, viele offene Flaechen.',
+    surface: { WATER_LEVEL: -0.78, SAND_LEVEL: 0.05, DIRT_LEVEL: 0.42, PLANT_DENSITY: 0.002, FLOWER_DENSITY: 0.001, STONE_DENSITY: 0.006 },
+    nest: { HARD_SOIL_START: 26 },
+  },
+  {
+    key: 'aue', name: 'Flussaue', seed: 'aue-1',
+    desc: 'Feucht: viele Pfuetzen, Sandbaenke und dichter Bewuchs.',
+    surface: { WATER_LEVEL: -0.18, SAND_LEVEL: -0.02, DIRT_LEVEL: 0.10, PLANT_DENSITY: 0.016, FLOWER_DENSITY: 0.008 },
+    nest: { HARD_SOIL_START: 55, ROOT_DENSITY: 0.022 },
+  },
+  {
+    key: 'geroell', name: 'Geroellhang', seed: 'geroell-1',
+    desc: 'Steinig und karg. Graben ist muehsam, Deckung gibt es reichlich.',
+    surface: { STONE_DENSITY: 0.055, PEBBLE_DENSITY: 0.02, PLANT_DENSITY: 0.003, DIRT_LEVEL: 0.30 },
+    nest: { HARD_SOIL_START: 12, STONE_THRESHOLD: 0.50, PEBBLE_DENSITY: 0.02 },
+  },
+  {
+    key: 'garten', name: 'Bluetengarten', seed: 'garten-1',
+    desc: 'Viele Bluetenpflanzen und Kiesel – gut fuer zuckerreiche Linien.',
+    surface: { PLANT_DENSITY: 0.02, FLOWER_DENSITY: 0.014, PEBBLE_DENSITY: 0.012, WATER_LEVEL: -0.35 },
+    nest: {},
+  },
+  {
+    key: 'zufall', name: 'Zufall', seed: null,
+    desc: 'Standardparameter mit frisch gewuerfeltem Seed.',
+    surface: {},
+    nest: {},
+  },
+];
+
+export function mapPreset(key) {
+  return MAP_PRESETS.find((p) => p.key === key) || MAP_PRESETS[0];
+}

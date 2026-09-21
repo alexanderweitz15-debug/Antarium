@@ -13,15 +13,11 @@
  * zeichnet – was in der Legende steht, sieht also aus wie im Spiel.
  */
 
-import { WORLD } from '../config.js';
 import { LEVEL_KIND } from '../sim/levels.js';
 import { SURFACE_CELL_DEFS } from '../sim/surface.js';
 import { NEST_CELL_DEFS, NEST_CELL, CHAMBER_DEFS } from '../sim/nest.js';
 import { CASTE_DEFS } from '../sim/castes.js';
-import { paintSurfaceChunk } from '../render/surfaceView.js';
-import { paintNestChunk } from '../render/nestView.js';
-
-const SWATCH_CELLS = 4;
+import { cellSwatch } from './swatch.js';
 
 export class Legend {
   /**
@@ -33,7 +29,6 @@ export class Legend {
     this.el = el;
     this.sprites = sprites;
     this.visibleOnly = visibleOnlyEl;
-    this.swatchCache = new Map();
     this.signature = '';
     if (this.visibleOnly) this.visibleOnly.addEventListener('change', () => { this.signature = ''; });
   }
@@ -140,30 +135,7 @@ export class Legend {
 
   /** Farbfeld eines Zelltyps – gezeichnet vom echten Terrain-Maler. */
   _cellSwatch(level, cellId, meta) {
-    const key = level.kind + ':' + cellId + ':' + meta;
-    if (this.swatchCache.has(key)) return this.swatchCache.get(key);
-
-    const n = SWATCH_CELLS;
-    const fake = {
-      w: n, h: n, kind: level.kind,
-      cells: new Uint8Array(n * n).fill(cellId),
-      meta: new Uint8Array(n * n).fill(meta || 0),
-      variant: new Uint8Array(n * n),
-    };
-    for (let i = 0; i < n * n; i++) fake.variant[i] = (i * 37 + cellId * 11) & 0xff;
-
-    const px = n * WORLD.CELL_PX;
-    const canvas = document.createElement('canvas');
-    canvas.width = px; canvas.height = px;
-    const ctx = canvas.getContext('2d');
-    const img = ctx.createImageData(px, px);
-    const buf = new Uint32Array(img.data.buffer);
-    const paint = level.kind === LEVEL_KIND.SURFACE ? paintSurfaceChunk : paintNestChunk;
-    paint(fake, 0, 0, n, n, buf);
-    ctx.putImageData(img, 0, 0);
-    const url = canvas.toDataURL();
-    this.swatchCache.set(key, url);
-    return url;
+    return cellSwatch(level.kind, cellId, meta || 0);
   }
 }
 
