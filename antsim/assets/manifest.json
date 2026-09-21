@@ -1,0 +1,22 @@
+{
+  "_hinweis": "Sprite-Manifest. file:null bedeutet: sprites.js erzeugt die Grafik prozedural (Pixel-Art inkl. Laufanimation). Soll eine eigene Grafik benutzt werden, hier den Dateinamen relativ zu basePath eintragen und frameWidth/frameHeight/frames anpassen. Frames liegen in der Quelldatei zeilenweise: links nach rechts, dann naechste Zeile; Zeilenlaenge = floor(Bildbreite / frameWidth).",
+  "version": 1,
+  "basePath": "assets/sprites/",
+  "cell": 20,
+  "sprites": {
+    "ant_queen":   { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 6, "anchor": [0.5, 0.5], "scale": 1.0, "animations": { "walk": { "from": 0, "to": 5, "fps": 14, "loop": true } } },
+    "ant_worker":  { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 6, "anchor": [0.5, 0.5], "scale": 1.0, "animations": { "walk": { "from": 0, "to": 5, "fps": 14, "loop": true } } },
+    "ant_soldier": { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 6, "anchor": [0.5, 0.5], "scale": 1.0, "animations": { "walk": { "from": 0, "to": 5, "fps": 14, "loop": true } } },
+    "ant_alate":   { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 6, "anchor": [0.5, 0.5], "scale": 1.0, "animations": { "walk": { "from": 0, "to": 5, "fps": 14, "loop": true } } },
+    "ant_armor":   { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 6, "anchor": [0.5, 0.5], "scale": 1.0, "animations": { "walk": { "from": 0, "to": 5, "fps": 10, "loop": true } } },
+    "ant_acid":    { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 6, "anchor": [0.5, 0.5], "scale": 1.0, "animations": { "walk": { "from": 0, "to": 5, "fps": 14, "loop": true } } },
+    "ant_bomb":    { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 6, "anchor": [0.5, 0.5], "scale": 1.0, "animations": { "walk": { "from": 0, "to": 5, "fps": 14, "loop": true } } },
+    "ant_replete": { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 6, "anchor": [0.5, 0.5], "scale": 1.0, "animations": { "walk": { "from": 0, "to": 5, "fps": 6, "loop": true } } },
+    "ant_pioneer": { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 6, "anchor": [0.5, 0.5], "scale": 1.0, "animations": { "walk": { "from": 0, "to": 5, "fps": 14, "loop": true } } },
+    "ant_medic":   { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 6, "anchor": [0.5, 0.5], "scale": 1.0, "animations": { "walk": { "from": 0, "to": 5, "fps": 14, "loop": true } } },
+    "ant_scout":   { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 6, "anchor": [0.5, 0.5], "scale": 1.0, "animations": { "walk": { "from": 0, "to": 5, "fps": 18, "loop": true } } },
+    "ant_titan":   { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 6, "anchor": [0.5, 0.5], "scale": 1.0, "animations": { "walk": { "from": 0, "to": 5, "fps": 8, "loop": true } } },
+    "marker_entrance": { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 1, "anchor": [0.5, 0.5], "scale": 1.0, "animations": {} },
+    "marker_select":   { "file": null, "frameWidth": 20, "frameHeight": 20, "frames": 1, "anchor": [0.5, 0.5], "scale": 1.0, "animations": {} }
+  }
+}

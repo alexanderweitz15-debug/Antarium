@@ -1,0 +1,286 @@
+/*
+ * style.css – Dunkles, minimalistisches Theme passend zur Pixel-Art.
+ * Panels liegen als Overlay ueber dem Canvas; nur die Panels selbst fangen
+ * Mausereignisse ab, der Rest geht an die Simulation.
+ */
+
+:root {
+  --bg: #0b0d0c;
+  --panel: #14181a;
+  --panel-2: #1b2125;
+  --line: #2b3439;
+  --text: #cfd8d4;
+  --text-dim: #8b9a95;
+  --accent: #6ec177;
+  --accent-2: #d9a441;
+  --warn: #d9604a;
+  --radius: 4px;
+  --font: 11px/1.45 "DejaVu Sans Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+/*
+ * Wichtig: .panel setzt display:flex und wuerde sonst das hidden-Attribut
+ * aushebeln (Klassenselektor schlaegt die Browser-Regel fuer [hidden]).
+ */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  image-rendering: pixelated;
+  cursor: crosshair;
+}
+
+#ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  display: block;
+}
+
+#ui .panel,
+#ui .bar,
+#ui .overlay,
+#ui button,
+#ui input,
+#ui label { pointer-events: auto; }
+
+/* ---------------------------------------------------------------- Topbar */
+.bar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  background: linear-gradient(180deg, rgba(20,24,26,.97), rgba(20,24,26,.88));
+  border-bottom: 1px solid var(--line);
+}
+
+.grow { flex: 1 1 auto; }
+
+.crumb {
+  color: var(--text-dim);
+  white-space: nowrap;
+  padding-right: 6px;
+  border-right: 1px solid var(--line);
+}
+.crumb b { color: var(--text); font-weight: 600; }
+
+.levelnav { display: flex; gap: 4px; align-items: center; }
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+.tab:hover { color: var(--text); border-color: #3c4a50; }
+.tab.active { color: var(--text); border-color: var(--accent); background: #1f2b26; }
+.tab .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.tab .key { color: #5d6b66; }
+.tab .threat { color: var(--warn); }
+
+.group { display: flex; gap: 2px; }
+
+.btn {
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+}
+.btn:hover { color: var(--text); border-color: #3c4a50; }
+.btn.active, .btn.toggle.on { color: #0c110e; background: var(--accent); border-color: var(--accent); }
+.btn.tiny { padding: 1px 5px; }
+
+.seed {
+  color: var(--text-dim);
+  border-left: 1px solid var(--line);
+  padding-left: 8px;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- Panels */
+.panel {
+  background: rgba(17,21,23,.975);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.panel h2 {
+  margin: 0;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.panel h2 .tiny, .tiny { font-size: 10px; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.panel-body { padding: 6px 8px; min-height: 0; }
+.scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: #33403f transparent; }
+.scroll::-webkit-scrollbar { width: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: #2b3439; border-radius: 4px; }
+
+#right {
+  position: absolute;
+  top: 42px; right: 8px; bottom: 150px;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+#panel-colonies { flex: 0 0 auto; max-height: 40%; }
+#panel-colonies .panel-body { overflow-y: auto; }
+#panel-legend { flex: 1 1 auto; min-height: 120px; }
+
+#panel-log {
+  position: absolute;
+  left: 8px; right: 276px; bottom: 8px;
+  height: 134px;
+}
+#log { flex: 1 1 auto; }
+
+#inspector {
+  position: absolute;
+  left: 8px; top: 42px;
+  width: 232px;
+}
+
+/* --------------------------------------------------------------- Kolonie */
+.colony { margin-bottom: 6px; }
+.colony-head {
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer; padding: 2px 0;
+}
+.colony-head:hover .cname { color: #fff; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; border: 1px solid rgba(0,0,0,.5); flex: 0 0 auto; }
+.cname { color: var(--text); }
+.cpop { margin-left: auto; color: var(--text-dim); }
+.castes { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 0 16px; }
+.caste-chip { display: flex; align-items: center; gap: 3px; color: var(--text-dim); }
+.caste-chip img { width: 14px; height: 14px; image-rendering: pixelated; }
+.bars { margin: 3px 0 0 16px; display: grid; grid-template-columns: 52px 1fr; gap: 2px 6px; align-items: center; }
+.bar-label { color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-track { height: 6px; background: #222a2c; border-radius: 2px; overflow: hidden; }
+.bar-fill { height: 100%; background: var(--accent); }
+
+/* --------------------------------------------------------------- Legende */
+.legend-cat { margin: 2px 0 6px; }
+.legend-cat h3 {
+  margin: 0 0 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent-2);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.legend-item {
+  display: flex; align-items: flex-start; gap: 6px;
+  padding: 1px 2px; border-radius: 2px; cursor: default;
+}
+.legend-item:hover { background: #1f272a; }
+.legend-swatch {
+  width: 14px; height: 14px; flex: 0 0 auto;
+  border: 1px solid rgba(0,0,0,.55);
+  border-radius: 2px;
+  image-rendering: pixelated;
+  margin-top: 1px;
+}
+.legend-text b { color: var(--text); font-weight: 600; }
+.legend-text span { color: var(--text-dim); }
+.legend-evo { color: var(--accent-2); }
+
+/* ------------------------------------------------------------------- Log */
+.log-line { display: flex; gap: 6px; white-space: nowrap; }
+.log-line .t { color: #55635f; }
+.log-line .c { color: var(--accent-2); }
+.log-line .m { color: var(--text-dim); white-space: normal; }
+.log-line.clickable { cursor: pointer; }
+.log-line.clickable:hover .m { color: var(--text); }
+.filters { display: flex; gap: 3px; margin-left: auto; }
+.filters .btn { padding: 0 5px; font-size: 10px; }
+
+/* -------------------------------------------------------------- Overlays */
+.overlay {
+  position: absolute;
+  background: rgba(10,13,14,.9);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 6px 9px;
+  white-space: pre;
+  color: var(--text-dim);
+}
+#perf { top: 42px; left: 248px; min-width: 250px; }
+#perf b { color: var(--accent); font-weight: 600; }
+#perf .warn { color: var(--warn); }
+.help { top: 42px; left: 50%; transform: translateX(-50%); white-space: normal; max-width: 460px; }
+.help table { border-collapse: collapse; }
+.help td { padding: 1px 10px 1px 0; vertical-align: top; }
+.help kbd {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px;
+  padding: 0 4px; color: var(--text);
+}
+
+.tip {
+  position: absolute;
+  background: rgba(10,13,14,.95);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 3px 6px;
+  pointer-events: none;
+  max-width: 260px;
+  z-index: 20;
+}
+.tip b { color: var(--text); }
+.tip .sub { color: var(--text-dim); }
+
+#debugmenu { position: absolute; left: 8px; bottom: 150px; width: 200px; }
+#debugmenu .panel-body { display: flex; flex-direction: column; gap: 4px; }
+
+/* ------------------------------------------------------------------ Boot */
+#boot {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg);
+  transition: opacity .25s ease;
+}
+#boot.done { opacity: 0; pointer-events: none; }
+.boot-inner { text-align: center; }
+.boot-title { font-size: 20px; letter-spacing: .3em; color: var(--accent); margin-bottom: 10px; }
+#boot-msg { color: var(--text-dim); max-width: 520px; white-space: pre-wrap; }
+#boot-msg.error { color: var(--warn); text-align: left; }

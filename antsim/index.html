@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Formicarium – Insekten-Oekosystem (Phase 1)</title>
+<link rel="stylesheet" href="style.css">
+<!--
+  PixiJS wird als ES-Modul von einer fest gepinnten CDN-Version geladen.
+  js/render/pixi.js faengt einen Fehlschlag ab und benutzt dann die
+  mitgelieferte Datei vendor/pixi.min.mjs derselben Version.
+-->
+<script type="importmap">
+{
+  "imports": {
+    "pixi.js": "https://cdn.jsdelivr.net/npm/pixi.js@8.21.0/dist/pixi.min.mjs"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="ui">
+  <header id="topbar" class="bar">
+    <div id="breadcrumb" class="crumb">Oberflaeche</div>
+    <nav id="levelnav" class="levelnav"></nav>
+    <div class="grow"></div>
+    <div id="speed" class="group" role="group" aria-label="Geschwindigkeit"></div>
+    <button id="btn-step" class="btn" title="Einzelschritt (nur bei Pause) – Taste .">Schritt</button>
+    <div class="group">
+      <button id="btn-grid" class="btn toggle" title="Chunk-Raster einblenden (Taste G)">Raster</button>
+      <button id="btn-trans" class="btn toggle on" title="Ebenenuebergang animieren">Uebergang</button>
+      <button id="btn-legend" class="btn toggle on" title="Legende (Taste L)">Legende</button>
+      <button id="btn-help" class="btn toggle" title="Tastenkuerzel (Taste H)">?</button>
+    </div>
+    <div id="seedbox" class="seed" title="Seed dieser Welt"></div>
+  </header>
+
+  <aside id="right">
+    <section id="panel-colonies" class="panel">
+      <h2>Kolonien</h2>
+      <div id="colonies" class="panel-body"></div>
+    </section>
+    <section id="panel-legend" class="panel">
+      <h2>Legende
+        <label class="tiny"><input type="checkbox" id="legend-visible-only"> nur Sichtbares</label>
+      </h2>
+      <div id="legend" class="panel-body scroll"></div>
+    </section>
+  </aside>
+
+  <section id="panel-log" class="panel">
+    <h2>Ereignisse <span id="log-filters" class="filters"></span></h2>
+    <div id="log" class="panel-body scroll"></div>
+  </section>
+
+  <div id="inspector" class="panel" hidden>
+    <h2>Inspektor <button id="insp-close" class="btn tiny">x</button></h2>
+    <div id="inspector-body" class="panel-body"></div>
+  </div>
+
+  <div id="perf" class="overlay" hidden></div>
+  <div id="help" class="overlay help" hidden></div>
+  <div id="tip" class="tip" hidden></div>
+  <div id="debugmenu" class="panel" hidden>
+    <h2>Debug</h2>
+    <div class="panel-body">
+      <button class="btn" data-debug="ants5000">5000 Ameisen spawnen</button>
+      <button class="btn" data-debug="ants1000">+1000 Ameisen</button>
+      <button class="btn" data-debug="clear">Ameisen entfernen</button>
+      <button class="btn" data-debug="dirty">Alle Chunks neu zeichnen</button>
+    </div>
+  </div>
+</div>
+
+<div id="boot">
+  <div class="boot-inner">
+    <div class="boot-title">Formicarium</div>
+    <div id="boot-msg">Lade PixiJS und erzeuge die Welt …</div>
+  </div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
