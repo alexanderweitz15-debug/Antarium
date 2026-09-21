@@ -36,6 +36,9 @@ export const SURFACE_CELL = {
   // --- Kreaturenbauten --------------------------------------------------
   WEB: 19,
   FUNNEL: 20,
+  // --- Befestigungen an der Oberflaeche (Phase 6) -----------------------
+  WALL: 21,       // Kieselwall rund um den Eingang
+  RESIN_BLOB: 22, // Harzklecks: verlangsamt Feinde
 };
 
 /**
@@ -69,6 +72,9 @@ export const SURFACE_CELL_DEFS = [
 
   { id: 19, key: 'web', name: 'Spinnennetz', desc: 'Haelt Ameisen fest. Von Saeure aufloesbar.', color: 0xd8dde2, alt: 0xa8b2ba, solid: false, category: 'kreatur' },
   { id: 20, key: 'funnel', name: 'Trichter', desc: 'Falle des Ameisenloewen im Sand.', color: 0xb8a276, alt: 0x9a8760, solid: false, category: 'kreatur' },
+
+  { id: 21, key: 'wall', name: 'Kieselwall', desc: 'Schuetzt den Eingang. Unpassierbar fuer Raeuber und Feinde.', color: 0x9e968a, alt: 0x88807a, solid: true, category: 'befestigung' },
+  { id: 22, key: 'resinblob', name: 'Harz', desc: 'Klebrig. Verlangsamt alles, was hineinlaeuft.', color: 0xc08c3e, alt: 0xd8a458, solid: false, category: 'befestigung' },
 ];
 
 /** Zelltyp -> Schluessel des Nahrungsprofils (oder null). */

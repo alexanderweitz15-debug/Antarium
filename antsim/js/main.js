@@ -10,9 +10,12 @@
  *   letzten Tick (alpha), damit die Bewegung auch bei 1x fluessig aussieht.
  */
 
-import { SIM, WORLD, CAMERA, TRANSITION, COLONY, MAP_PRESETS, mapPreset } from './config.js';
+import {
+  SIM, WORLD, CAMERA, TRANSITION, COLONY, MAP_PRESETS, mapPreset, CINEMA, STORAGE,
+} from './config.js';
 import { World } from './sim/world.js';
 import { LEVEL_KIND } from './sim/levels.js';
+import { ANT_STATE } from './sim/ants.js';
 import { bus, CAT } from './sim/events.js';
 import { SpriteBank } from './render/sprites.js';
 import { Camera } from './render/camera.js';
@@ -28,6 +31,12 @@ import { ColonyPanel } from './ui/panels.js';
 import { Toolbar } from './ui/toolbar.js';
 import { ResearchPanel } from './ui/research.js';
 import { StatsPanel } from './ui/stats.js';
+import { AlertView } from './ui/alerts.js';
+import { SettingsPanel } from './ui/settings.js';
+import { Audio } from './ui/audio.js';
+import { clockString, PHASE_NAME } from './sim/daynight.js';
+import { Minimap } from './render/minimap.js';
+import { PipView } from './render/pip.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -41,6 +50,11 @@ function randomSeed() {
 // ---------------------------------------------------------------------------
 // Fehler sichtbar machen – eine leere schwarze Seite hilft niemandem.
 // ---------------------------------------------------------------------------
+/** Kurze Notiz beim Start (keine Fehlerseite, nur ein Hinweis im Log). */
+function bootNote(msg) {
+  bus.logEvent(CAT.SYS, msg, { tick: 0 });
+}
+
 function bootError(msg) {
   const el = $('boot-msg');
   if (!el) return;
@@ -63,7 +77,25 @@ async function boot() {
   const seed = params.get('seed') || preset.seed || randomSeed();
 
   // --- Welt ----------------------------------------------------------------
-  const world = new World(seed, preset.key).generate();
+  /**
+   * Beim Laden eines Standes setzt applySaveData eine Marke und laedt die
+   * Seite neu. Hier wird sie eingeloest: die Welt kommt dann aus der Datei
+   * statt aus dem Generator.
+   */
+  let world = null;
+  let loadedFromSave = false;
+  try {
+    if (localStorage.getItem(STORAGE.SAVE + '.pending')) {
+      localStorage.removeItem(STORAGE.SAVE + '.pending');
+      const raw = localStorage.getItem(STORAGE.SAVE);
+      if (raw) {
+        const res = World.fromSave(JSON.parse(raw));
+        if (res.ok) { world = res.world; loadedFromSave = true; }
+        else bootNote('Spielstand nicht lesbar: ' + res.reason);
+      }
+    }
+  } catch { world = null; }
+  if (!world) world = new World(seed, preset.key).generate();
 
   // --- Grafik --------------------------------------------------------------
   const sprites = await new SpriteBank().load();
@@ -90,7 +122,17 @@ async function boot() {
     research: false,
     stats: false,
     phero: [false, false, false],
+    cinema: false,
+    autoJump: false,
+    follow: -1,
+    settings: false,
+    front: false,
+    shakeOn: true,
+    interpolate: true,
+    autosave: false,
   };
+  let cinemaTimer = 0;
+  let cinemaSeen = -1;
   /** Restliche Ticks eines Schnelldurchlaufs (Forschungsmenue). */
   let fastForwardLeft = 0;
 
@@ -129,12 +171,45 @@ async function boot() {
         $('panel-research').hidden = !state.research;
         if (state.research) research.refresh(true);
       }
+      if (which === 'settings') {
+        state.settings = !state.settings;
+        $('panel-settings').hidden = !state.settings;
+        if (state.settings) { settings.build(); settings.refreshStatus(); }
+      }
       if (which === 'stats') {
         state.stats = !state.stats;
         $('panel-stats').hidden = !state.stats;
         if (state.stats) { stats.timer = 0; stats.refresh(0); }
       }
       hud.update(state);
+    },
+    /** Bild-in-Bild oeffnen bzw. schliessen. */
+    togglePip() {
+      if (pip.count > 0) { pip.closeAll(); }
+      else {
+        // Standardmaessig die jeweils andere Ebene zeigen
+        const active = world.levels.activeId;
+        const other = world.levels.levels.find((l) => l.id !== active);
+        if (other) pip.open(other.id, null);
+      }
+      state.pip = pip.count > 0;
+      hud.update(state);
+    },
+    /** Kinomodus: springt selbstaendig zu Ereignissen. */
+    toggleCinema() {
+      state.cinema = !state.cinema;
+      cinemaTimer = 0;
+      hud.update(state);
+    },
+    toggleAutoJump() {
+      state.autoJump = !state.autoJump;
+      alerts.autoJump = state.autoJump;
+      hud.update(state);
+    },
+    /** Einheit verfolgen (-1 = aus). */
+    follow(antIndex) {
+      state.follow = antIndex;
+      camera.followAnt = antIndex;
     },
     /** Pheromon-Overlay: Typ ein-/ausschalten. */
     togglePhero(type) {
@@ -153,6 +228,134 @@ async function boot() {
         { tick: world.tick });
     },
     clearSelection() { inspector.clear(); },
+    /** Legende: alle sichtbaren Zellen eines Typs hervorheben (-1 = aus). */
+    highlightCell(cellId, meta) {
+      renderer.setHighlight(cellId, meta);
+    },
+    /**
+     * Frontverfolgung: die Kamera bleibt auf dem Schwerpunkt der Kaempfe der
+     * aktiven Ebene. Ohne das verliert man bei einem Ueberfall sofort den
+     * Ueberblick, weil sich die Front laufend verschiebt.
+     */
+    toggleFront() {
+      state.front = !state.front;
+      if (state.front) { state.follow = -1; camera.followAnt = -1; }
+      hud.update(state);
+    },
+
+    // --- Einstellungen und Spielstaende -----------------------------------
+    /** Eine Einstellung auf das jeweilige System anwenden. */
+    applySetting(key, value) {
+      switch (key) {
+        case 'daynight':
+          world.dayNightOn = !!value;
+          break;
+        case 'particles':
+          renderer.particles.enabled = !!value;
+          if (!value) renderer.particles.clear();
+          break;
+        case 'shake':
+          state.shakeOn = !!value;
+          renderer.shakeEnabled = !!value;
+          break;
+        case 'transition':
+          state.transition = !!value;
+          transition.setEnabled(!!value);
+          break;
+        case 'interpolate':
+          state.interpolate = !!value;
+          break;
+        case 'sound':
+          audio.setEnabled(!!value);
+          break;
+        case 'volume':
+          audio.setVolume(Number(value));
+          break;
+        case 'autosave':
+          state.autosave = !!value;
+          break;
+        default:
+          break;
+      }
+      hud.update(state);
+    },
+    /** Stand im Browser ablegen. */
+    saveLocal() {
+      try {
+        localStorage.setItem(STORAGE.SAVE, JSON.stringify(world.toSave()));
+        bus.logEvent(CAT.SYS, 'Spielstand im Browser abgelegt', { tick: world.tick });
+      } catch (e) {
+        bus.logEvent(CAT.SYS, 'Speichern fehlgeschlagen: ' + e.message, { tick: world.tick });
+      }
+      settings.refreshStatus();
+    },
+    /** Zuletzt abgelegten Stand laden. */
+    loadLocal() {
+      let raw = null;
+      try { raw = localStorage.getItem(STORAGE.SAVE); } catch { raw = null; }
+      if (!raw) {
+        bus.logEvent(CAT.SYS, 'Kein Spielstand im Browser vorhanden', { tick: world.tick });
+        return;
+      }
+      game.applySaveData(JSON.parse(raw));
+    },
+    clearLocal() {
+      try { localStorage.removeItem(STORAGE.SAVE); } catch { /* egal */ }
+      bus.logEvent(CAT.SYS, 'Abgelegter Spielstand geloescht', { tick: world.tick });
+      settings.refreshStatus();
+    },
+    /** Stand als Datei herunterladen. */
+    saveFile() {
+      const text = JSON.stringify(world.toSave());
+      const blob = new Blob([text], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'formicarium-' + world.seed + '-' + world.tick + '.json';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      bus.logEvent(CAT.SYS, 'Spielstand als Datei gespeichert', { tick: world.tick });
+    },
+    /** Stand aus einer Datei laden. */
+    loadFile() {
+      const inp = document.createElement('input');
+      inp.type = 'file';
+      inp.accept = '.json,application/json';
+      inp.addEventListener('change', () => {
+        const file = inp.files && inp.files[0];
+        if (!file) return;
+        const r = new FileReader();
+        r.onload = () => {
+          try { game.applySaveData(JSON.parse(String(r.result))); }
+          catch (e) { bus.logEvent(CAT.SYS, 'Datei unlesbar: ' + e.message, { tick: world.tick }); }
+        };
+        r.readAsText(file);
+      });
+      inp.click();
+    },
+    /**
+     * Speicherstand uebernehmen.
+     *
+     * Die Welt wird dabei ERSETZT, nicht ueberschrieben: Seed und
+     * Kartenvorlage koennen andere sein, und alle Systeme haengen an der
+     * Weltinstanz. Deshalb wird die Seite mit dem Stand im Browserspeicher
+     * neu geladen – das ist ehrlicher, als hundert Verweise nachzuziehen
+     * und dabei einen zu vergessen.
+     */
+    applySaveData(data) {
+      const probe = World.fromSave(data);
+      if (!probe.ok) {
+        bus.logEvent(CAT.SYS, 'Laden fehlgeschlagen: ' + probe.reason, { tick: world.tick });
+        return;
+      }
+      try {
+        localStorage.setItem(STORAGE.SAVE, JSON.stringify(data));
+        localStorage.setItem(STORAGE.SAVE + '.pending', '1');
+      } catch (e) {
+        bus.logEvent(CAT.SYS, 'Laden fehlgeschlagen: ' + e.message, { tick: world.tick });
+        return;
+      }
+      location.reload();
+    },
     /** Ebenenwechsel mit Uebergang. focus = Zelle, auf die die Kamera zielt. */
     gotoLevel(levelId, focus) {
       const target = world.levels.get(levelId);
@@ -223,6 +426,8 @@ async function boot() {
       levelNav.update(world);
       legend.signature = '';
       colonyPanel.signature = '';
+      pip.refreshLevels();
+      void colony;
     },
     debugAction(what) {
       if (what === 'ants5000') {
@@ -250,7 +455,7 @@ async function boot() {
 
   // --- UI ------------------------------------------------------------------
   const levelNav = new LevelNav($('levelnav'), $('breadcrumb'), game);
-  const legend = new Legend($('legend'), $('legend-visible-only'), sprites);
+  const legend = new Legend($('legend'), $('legend-visible-only'), sprites, game);
   const perf = new PerfOverlay($('perf'));
   const logView = new EventLogView($('log'), $('log-filters'), game);
   const inspector = new Inspector($('tip'), $('inspector'), $('inspector-body'), world, sprites);
@@ -258,18 +463,30 @@ async function boot() {
   const toolbar = new Toolbar($('tools'), world, sprites, game);
   const research = new ResearchPanel($('research'), world, game, sprites);
   const stats = new StatsPanel($('stats'), world, game, sprites);
+  const alerts = new AlertView($('toasts'), world, game);
+  const minimap = new Minimap($('minimap'), world, camera, game);
+  const pip = new PipView(renderer, world, $('pips'), game);
+  const audio = new Audio();
+  const settings = new SettingsPanel($('settings'), game);
   const hud = new Hud({
     speed: $('speed'), step: $('btn-step'), grid: $('btn-grid'), trans: $('btn-trans'),
     legendBtn: $('btn-legend'), help: $('btn-help'), helpPanel: $('help'),
     seed: $('seedbox'), debug: $('debugmenu'), inspClose: $('insp-close'),
     research: $('btn-research'), stats: $('btn-stats'),
+    pip: $('btn-pip'), cinema: $('btn-cinema'), autojump: $('btn-autojump'),
+    front: $('btn-front'),
     researchClose: $('research-close'), statsClose: $('stats-close'),
     pheroGroup: $('phero-group'),
+    settingsBtn: $('btn-settings'), settingsClose: $('settings-close'),
   }, game);
   levelNav.rebuild(world);
   levelNav.update(world);
   toolbar.refresh();
+  settings.applyAll();
   hud.update(state);
+  if (loadedFromSave) {
+    bus.logEvent(CAT.SYS, 'Spielstand geladen (Tick ' + world.tick + ')', { tick: world.tick });
+  }
 
   // --- Kartenvorlage und Seed in der Kopfzeile -----------------------------
   const mapSel = $('mapselect');
@@ -377,7 +594,9 @@ async function boot() {
     // 2. Einheit -> Auswahl
     const w = camera.screenToWorld(sx, sy);
     const ant = world.ants.pick(level, w.x / WORLD.CELL_SIZE, w.y / WORLD.CELL_SIZE, 2.5);
-    if (ant >= 0) { inspector.select(ant); return; }
+    if (ant >= 0) { inspector.select(ant); game.follow(ant); return; }
+    const cr = world.creatures.pick(level.id, w.x / WORLD.CELL_SIZE, w.y / WORLD.CELL_SIZE, 3);
+    if (cr >= 0) { inspector.selectCreature(cr); return; }
     // 3. sonst Zellinfo
     inspector.selectCell(level, cellUnder);
   }
@@ -385,6 +604,13 @@ async function boot() {
   window.addEventListener('keydown', (e) => {
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
     keys.add(e.code);
+    // Schnell speichern und laden
+    if (e.ctrlKey || e.metaKey) {
+      if (e.code === 'KeyS') { e.preventDefault(); game.saveLocal(); return; }
+      if (e.code === 'KeyL') { e.preventDefault(); game.loadLocal(); return; }
+      return;
+    }
+    audio.unlock();
     switch (e.code) {
       case 'Space': e.preventDefault(); game.togglePause(); break;
       case 'Escape': case 'Backspace':
@@ -395,7 +621,12 @@ async function boot() {
       case 'KeyV': toolbar.setTool('select'); break;
       case 'KeyR': game.togglePanel('research'); break;
       case 'KeyT': game.togglePanel('stats'); break;
+      case 'KeyO': game.togglePanel('settings'); break;
+      case 'KeyK': game.toggleFront(); break;
       case 'KeyP': game.togglePhero(1); break;
+      case 'KeyB': game.togglePip(); break;
+      case 'KeyC': game.toggleCinema(); break;
+      case 'KeyF': game.follow(inspector.selected); break;
       case 'BracketLeft': toolbar.setBrush(toolbar.brush - 2); break;
       case 'BracketRight': toolbar.setBrush(toolbar.brush + 2); break;
       case 'Period': game.step(); break;
@@ -440,9 +671,44 @@ async function boot() {
   let accumulator = 0;
   let lastTime = performance.now();
   let uiTimer = 0;
+  let lastAutoSave = world.tick;
 
   function simTick() {
     world.step();
+    drainFx();
+  }
+
+  /**
+   * Schwerpunkt aller kaempfenden Ameisen auf der aktiven Ebene.
+   * Kaempft niemand, bleibt die Kamera stehen (null).
+   */
+  function combatCentroid() {
+    const level = world.levels.active;
+    const a = world.ants;
+    const b = a.buckets.get(level.id);
+    if (!b) return null;
+    let sx = 0, sy = 0, n = 0;
+    for (let k = 0; k < b.count; k++) {
+      const i = b.ids[k];
+      const st = a.state[i];
+      if (st !== ANT_STATE.ATTACK && st !== ANT_STATE.DEFEND && st !== ANT_STATE.RAID) continue;
+      sx += a.x[i]; sy += a.y[i]; n++;
+    }
+    if (n < CINEMA.FRONT_MIN_ANTS) return null;
+    return { x: sx / n, y: sy / n };
+  }
+
+  /**
+   * Anzeige-Effekte des letzten Ticks in den Teilchenpuffer schieben.
+   * Der Puffer der Welt wird bei jedem Tick geleert – wird er nicht
+   * abgeholt (Schnelldurchlauf), gehen nur Teilchen verloren, nichts sonst.
+   */
+  function drainFx() {
+    const f = world.fx;
+    if (!f.count || !renderer.particles.enabled) return;
+    for (let i = 0; i < f.count; i++) {
+      renderer.particles.burst(f.level[i], f.x[i], f.y[i], f.kind[i], f.n[i]);
+    }
   }
 
   function renderFrame(alpha) {
@@ -496,21 +762,63 @@ async function boot() {
       accumulator = 0;
     }
 
+    // --- Einheit verfolgen (auch ueber Ebenen hinweg) ---------------------
+    if (camera.followAnt >= 0) {
+      const a = world.ants;
+      const idx = camera.followAnt;
+      if (!a.alive[idx]) {
+        camera.followAnt = -1;
+        state.follow = -1;
+      } else if (!transition.active) {
+        if (a.level[idx] !== world.levels.activeId) {
+          if (state.followLevels !== false) game.gotoLevel(a.level[idx]);
+        } else {
+          const al = speed > 0 ? Math.min(1, accumulator / SIM.TICK_MS) : 1;
+          camera.x = (a.px[idx] + (a.x[idx] - a.px[idx]) * al) * WORLD.CELL_SIZE;
+          camera.y = (a.py[idx] + (a.y[idx] - a.py[idx]) * al) * WORLD.CELL_SIZE;
+          camera.clamp();
+        }
+      }
+    }
+
+    // --- Frontverfolgung: Schwerpunkt der Kaempfe ---------------------------
+    if (state.front && !transition.active) {
+      const c = combatCentroid();
+      if (c) camera.glideTo(c.x * WORLD.CELL_SIZE, c.y * WORLD.CELL_SIZE, dt);
+    }
+
+    // --- Kinomodus: zum naechsten sehenswerten Ereignis --------------------
+    if (state.cinema && !transition.active) {
+      cinemaTimer -= dt;
+      if (cinemaTimer <= 0) {
+        cinemaTimer = CINEMA.INTERVAL_MS;
+        const ev = bus.recent(30, (e) => CINEMA.CATEGORIES.includes(e.cat)
+          && e.levelId >= 0 && e.x >= 0 && e.seq > cinemaSeen
+          && world.tick - e.tick < CINEMA.MAX_AGE)[0];
+        if (ev) {
+          cinemaSeen = ev.seq;
+          game.gotoLevel(ev.levelId, { x: ev.x, y: ev.y });
+          camera.followAnt = -1;
+        }
+      }
+    }
+
     // Pinselvorschau folgt dem Zeiger
     if (toolbar.isPaintTool && pointer.moved && !transition.active) {
       camera.screenToCell(pointer.x, pointer.y, cellUnder);
-      const colony = world.colonies.get(toolbar.colonyId);
-      renderer.setBrushPreview(cellUnder.x, cellUnder.y, toolbar.brush,
-        toolbar.current.kind === 'ants' || toolbar.current.kind === 'colony'
-          ? (colony ? colony.color : 0xffffff) : 0x9ee6a8);
+      renderer.setBrushPreview(cellUnder.x, cellUnder.y, toolbar.previewRadius,
+        toolbar.previewColor());
     } else {
       renderer.setBrushPreview(0, 0, -1, 0);
     }
 
-    const alpha = speed > 0 ? Math.min(1, accumulator / SIM.TICK_MS) : 1;
+    const alpha = (speed > 0 && state.interpolate) ? Math.min(1, accumulator / SIM.TICK_MS) : 1;
+    renderer.setFrameDelta(dt / 16.67);
     renderFrame(alpha);
 
     // Kamera folgt einer Einheit ueber Ebenen hinweg (Phase 4 baut das aus)
+    pip.update();
+    minimap.render(dt);
     perf.sample(rawDt, world, ticks);
     perf.render(nowMs, world, renderer, speed);
 
@@ -521,6 +829,7 @@ async function boot() {
       levelNav.rebuild(world);
       levelNav.update(world);
       toolbar.refresh();
+      toolbar.syncGodMode();
       $('tool-level').textContent = world.levels.active.kind === 0 ? 'Oberflaeche' : 'Nest';
       colonyPanel.refresh();
       legend.refresh(world, camera.visibleCells(0));
@@ -528,6 +837,20 @@ async function boot() {
       inspector.refresh();
       research.refresh();
       stats.refresh(125);
+      alerts.refresh();
+      $('minimap-label').textContent = world.levels.active.name;
+      // Uhr in der Kopfzeile
+      const clk = $('clock');
+      if (clk) {
+        clk.textContent = world.dayNightOn
+          ? clockString(world.timeOfDay) + ' ' + PHASE_NAME[world.dayPhase]
+          : 'Tag (fest)';
+      }
+      // Automatisch speichern (alle zwei Minuten Spielzeit)
+      if (state.autosave && world.tick - lastAutoSave >= SIM.TICK_RATE * 120) {
+        lastAutoSave = world.tick;
+        game.saveLocal();
+      }
       if (!pointer.down && pointer.moved) {
         updateCellUnderPointer();
         const level = world.levels.active;
@@ -545,7 +868,7 @@ async function boot() {
   requestAnimationFrame(loop);
 
   // Fuer Konsolenexperimente erreichbar machen.
-  window.formicarium = { world, renderer, camera, game, sprites, state };
+  window.formicarium = { world, renderer, camera, game, sprites, state, pip };
 }
 
 boot().catch((err) => {

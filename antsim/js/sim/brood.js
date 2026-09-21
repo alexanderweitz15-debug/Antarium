@@ -37,6 +37,8 @@ export class BroodPool {
     this.hungry = new Uint16Array(capacity);
     /** Kaste, die daraus wird. */
     this.target = new Uint8Array(capacity);
+    /** Ameise, die diese Brut gerade traegt (-1 = liegt). */
+    this.carrier = new Int32Array(capacity).fill(-1);
     /** Phaenotyp beim Anlegen (muetterlicher Effekt). */
     this.pSize = new Float32Array(capacity);
     this.pSpeed = new Float32Array(capacity);
@@ -63,6 +65,7 @@ export class BroodPool {
     this.fed[i] = 0;
     this.hungry[i] = 0;
     this.target[i] = opts.target !== undefined ? opts.target : CASTE.WORKER;
+    this.carrier[i] = -1;
     this.pSize[i] = opts.pSize || 1;
     this.pSpeed[i] = opts.pSpeed || 1;
     this.pLife[i] = opts.pLife || 1;
@@ -101,8 +104,20 @@ export class BroodPool {
    */
   update(ctx) {
     const world = ctx.world;
+    const ants = world.ants;
     for (let i = 0; i < this.high; i++) {
       if (!this.alive[i]) continue;
+      // Getragene Brut folgt ihrer Traegerin (Evakuierung)
+      const c = this.carrier[i];
+      if (c >= 0) {
+        if (ants.alive[c] && ants.carryType[c] === 3) {
+          this.x[i] = ants.x[c];
+          this.y[i] = ants.y[c];
+          this.level[i] = ants.level[c];
+        } else {
+          this.carrier[i] = -1;
+        }
+      }
       const colony = world.colonies.get(this.colony[i]);
       if (!colony || !colony.alive) { this.kill(i); continue; }
 
@@ -116,6 +131,25 @@ export class BroodPool {
           break;
 
         case STAGE.LARVA: {
+          /**
+           * KLAUSTRALE GRUENDUNG. Eine junge Kolonie besteht anfangs nur aus
+           * der Koenigin; es gibt niemanden, der Larven fuettert. Ohne diesen
+           * Sonderfall bleibt so eine Kolonie fuer immer bei einer einzigen
+           * Ameise stehen – weder tot noch lebendig. In der Natur zehrt die
+           * Jungkoenigin dafuer von ihren Reserven und zieht die erste Brut
+           * allein auf. Genau das passiert hier: solange die Kolonie unter
+           * BROOD.CLAUSTRAL_WORKERS Ameisen hat, fuettert die Koenigin
+           * direkt aus dem Lager.
+           */
+          if (colony.total <= BROOD.CLAUSTRAL_WORKERS
+              && this.fed[i] < BROOD.LARVA_PROTEIN
+              && colony.storeArr[1] > 0.02) {
+            const put = Math.min(BROOD.CLAUSTRAL_RATE,
+              BROOD.LARVA_PROTEIN - this.fed[i], colony.storeArr[1]);
+            colony.storeArr[1] -= put;
+            this.fed[i] += put;
+            this.hungry[i] = 0;
+          }
           // Fortschritt nur, soweit die Larve gefuettert wurde
           const ratio = this.fed[i] / BROOD.LARVA_PROTEIN;
           this.progress[i] += ratio > 0.02 ? 1 : 0;
@@ -161,7 +195,7 @@ export class BroodPool {
     const id = world.ants.spawn({
       levelId: level.id, x: this.x[i], y: this.y[i], colonyId: colony.id,
       casteId: def.id, dir: ctx.rng.angle(), state: ANT_STATE.EXPLORE,
-      timer: ctx.rng.intRange(60, 300),
+      timer: ctx.rng.intRange(60, 300), hungerTol: ctx.rng.float(),
     });
     if (id >= 0) {
       const a = world.ants;
@@ -201,6 +235,19 @@ export class BroodPool {
       c.broodCount[this.stage[i]]++;
       c.broodTotal++;
     }
+  }
+
+  /** Nicht getragene eigene Brut in der Naehe finden (fuer die Evakuierung). */
+  findLoose(colonyId, levelId, x, y, maxDist) {
+    let best = -1, bestD = maxDist * maxDist;
+    for (let i = 0; i < this.high; i++) {
+      if (!this.alive[i] || this.colony[i] !== colonyId || this.level[i] !== levelId) continue;
+      if (this.carrier[i] >= 0) continue;
+      const dx = this.x[i] - x, dy = this.y[i] - y;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
   }
 
   /** Eine hungrige Larve der Kolonie finden (fuer die Ammen). */

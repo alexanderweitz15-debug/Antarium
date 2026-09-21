@@ -12,7 +12,10 @@ import { World } from '../js/sim/world.js';
 import { sigmaFor } from '../js/sim/genome.js';
 import { SPECIES_LIST } from '../js/sim/creatures.js';
 import { CASTE_DEFS } from '../js/sim/castes.js';
-import { SIM } from '../js/config.js';
+import { SIM, DAYNIGHT } from '../js/config.js';
+import { INTERVENTIONS } from '../js/sim/interventions.js';
+import { LEVEL_KIND } from '../js/sim/levels.js';
+import { lightAt, timeOfDay, activityFor } from '../js/sim/daynight.js';
 
 const results = [];
 const check = (name, ok, info = '') => {
@@ -137,6 +140,88 @@ const stressed = sigmaFor({ balanceArr: new Float32Array([1, 1, 1]), stress: 2.0
 check('Stress erhoeht die genetische Streuung',
   stressed.aggressivitaet > calm.aggressivitaet * 2,
   calm.aggressivitaet.toFixed(3) + ' -> ' + stressed.aggressivitaet.toFixed(3));
+
+// --- Phase 9: alle Eingriffe laufen ohne Fehler ---------------------------
+{
+  const iw = new World('eingriffe').generate();
+  for (let i = 0; i < 900; i++) iw.step();
+  const broken = [];
+  for (const iv of INTERVENTIONS) {
+    const lvl = iv.where === 'nest'
+      ? iw.levels.levels.find((l) => l.kind === LEVEL_KIND.NEST) : iw.levels.surface;
+    const x = iv.where === 'nest' ? 60 : 200;
+    const y = iv.where === 'nest' ? 60 : 200;
+    try {
+      const r = iw.applyIntervention(iv.key, lvl, x, y,
+        { power: 1, radius: 14, colonyId: 0, chamberType: 1 });
+      for (let k = 0; k < 30; k++) iw.step();
+      if (!r.ok) broken.push(iv.key + ': ' + r.reason);
+    } catch (e) {
+      broken.push(iv.key + ' wirft: ' + e.message);
+    }
+  }
+  check('Alle goettlichen Eingriffe laufen fehlerfrei', broken.length === 0,
+    INTERVENTIONS.length + ' Eingriffe' + (broken.length ? ', Fehler: ' + broken.join('; ') : ''));
+}
+
+// --- Phase 10: Tag-Nacht-Zyklus -------------------------------------------
+{
+  const noon = lightAt(0.5), night = lightAt(0.95);
+  check('Tag ist heller als Nacht', noon > night && night >= DAYNIGHT.NIGHT_LIGHT - 1e-6,
+    'Mittag ' + noon.toFixed(2) + ' vs Nacht ' + night.toFixed(2));
+  const beetle = { nocturnal: true }, fly = { diurnal: true };
+  check('Nachtaktive und tagaktive Arten tauschen die Rollen',
+    activityFor(beetle, night) > activityFor(beetle, noon)
+    && activityFor(fly, noon) > activityFor(fly, night),
+    'Kaefer ' + activityFor(beetle, night).toFixed(2) + '/' + activityFor(beetle, noon).toFixed(2)
+    + ', Fliege ' + activityFor(fly, noon).toFixed(2) + '/' + activityFor(fly, night).toFixed(2));
+  const dn = new World('tagnacht').generate();
+  for (let i = 0; i < 400; i++) dn.step();
+  const lit = dn.light;
+  dn.tick = Math.round(DAYNIGHT.CYCLE_TICKS * 0.95);
+  dn.step();
+  check('Die Welt fuehrt eine Tageszeit mit', Math.abs(timeOfDay(dn.tick) - dn.timeOfDay) < 1e-9
+    && dn.light < lit, 'Licht ' + lit.toFixed(2) + ' -> ' + dn.light.toFixed(2));
+}
+
+// --- Phase 10: Speichern und Laden -----------------------------------------
+{
+  const a = new World('speicher').generate();
+  for (let i = 0; i < 3000; i++) a.step();
+  const text = JSON.stringify(a.toSave());
+  const res = World.fromSave(JSON.parse(text));
+  check('Speicherstand laesst sich laden', res.ok, res.ok
+    ? Math.round(text.length / 1024) + ' KB' : res.reason);
+  if (res.ok) {
+    const b = res.world;
+    check('Geladener Stand hat denselben Bestand',
+      a.ants.count === b.ants.count && a.brood.count === b.brood.count
+      && a.creatures.count === b.creatures.count && a.tick === b.tick,
+      a.ants.count + '/' + a.brood.count + '/' + a.creatures.count);
+    /**
+     * Der wichtigste Punkt: ein geladener Stand muss EXAKT so weiterlaufen
+     * wie der gespeicherte. Sonst ist "Speichern" nur ein Schnappschuss der
+     * Anzeige, nicht der Simulation.
+     */
+    const hash = (w) => {
+      let v = 0;
+      for (let i = 0; i < w.ants.high; i++) {
+        v = (v * 31 + w.ants.alive[i] + Math.round(w.ants.x[i] * 1000) + w.ants.state[i]) | 0;
+      }
+      for (let i = 0; i < w.creatures.high; i++) {
+        v = (v * 31 + w.creatures.alive[i] + Math.round(w.creatures.x[i] * 1000)) | 0;
+      }
+      return v;
+    };
+    let diverged = -1;
+    for (let i = 0; i < 2000; i++) {
+      a.step(); b.step();
+      if (diverged < 0 && hash(a) !== hash(b)) diverged = a.tick;
+    }
+    check('Geladener Stand laeuft identisch weiter', diverged < 0,
+      diverged < 0 ? '2000 Ticks deckungsgleich' : 'Abweichung ab Tick ' + diverged);
+  }
+}
 
 // --- Keine ungueltigen Werte ----------------------------------------------
 let bad = 0;

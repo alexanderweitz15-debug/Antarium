@@ -11,7 +11,7 @@
  * die Simulation die einzige Stelle, die Weltzustand veraendert.
  */
 
-import { TOOLS, CASTE_STATS, FOOD } from '../config.js';
+import { TOOLS, CASTE_STATS, FOOD, GODMODE } from '../config.js';
 import { LEVEL_KIND } from '../sim/levels.js';
 import { SURFACE_CELL, SURFACE_CELL_DEFS } from '../sim/surface.js';
 import { NEST_CELL, NEST_CELL_DEFS, CHAMBER, CHAMBER_DEFS } from '../sim/nest.js';
@@ -19,6 +19,8 @@ import { CASTE, CASTE_DEFS } from '../sim/castes.js';
 import { cellSwatch } from './swatch.js';
 import { bus, CAT } from '../sim/events.js';
 import { SPECIES_LIST } from '../sim/creatures.js';
+import { INTERVENTIONS } from '../sim/interventions.js';
+import { STAGE_NAMES } from '../sim/brood.js';
 
 /**
  * Werkzeugtabelle.
@@ -39,6 +41,10 @@ export const TOOL_DEFS = [
   { key: 'flower', name: 'Bluete', kind: 'paint', where: 'surface', cell: SURFACE_CELL.FLOWER },
   { key: 'pebble', name: 'Kiesel', kind: 'paint', where: 'surface', cell: SURFACE_CELL.PEBBLE },
   { key: 'mound', name: 'Erdhuegel', kind: 'paint', where: 'surface', cell: SURFACE_CELL.MOUND },
+  { key: 'wall', name: 'Kieselwall', kind: 'paint', where: 'surface', cell: SURFACE_CELL.WALL },
+  { key: 'resinblob', name: 'Harzklecks', kind: 'paint', where: 'surface', cell: SURFACE_CELL.RESIN_BLOB },
+  { key: 'web', name: 'Spinnennetz', kind: 'paint', where: 'surface', cell: SURFACE_CELL.WEB },
+  { key: 'funnel', name: 'Trichter', kind: 'paint', where: 'surface', cell: SURFACE_CELL.FUNNEL },
 
   // --- Nest: graben und zuschuetten ------------------------------------
   { key: 'tunnel', name: 'Tunnel', kind: 'paint', where: 'nest', cell: NEST_CELL.TUNNEL,
@@ -51,6 +57,17 @@ export const TOOL_DEFS = [
   { key: 'order', name: 'Bauauftrag', kind: 'order', where: 'nest',
     hint: 'Die Kolonie graebt diese Zellen selbst ab' },
 
+  // --- Nest: Befestigungen (Phase 6) -----------------------------------
+  { key: 'reinforced', name: 'Verstaerkt', kind: 'paint', where: 'nest', cell: NEST_CELL.REINFORCED },
+  { key: 'pillar', name: 'Pfeiler', kind: 'paint', where: 'nest', cell: NEST_CELL.PILLAR },
+  { key: 'resin', name: 'Harz', kind: 'paint', where: 'nest', cell: NEST_CELL.RESIN },
+  { key: 'plug', name: 'Pfropfen', kind: 'paint', where: 'nest', cell: NEST_CELL.PLUG },
+  { key: 'trap', name: 'Fallgrube', kind: 'paint', where: 'nest', cell: NEST_CELL.TRAP },
+  { key: 'nestwater', name: 'Wasser', kind: 'paint', where: 'nest', cell: NEST_CELL.WATER },
+  { key: 'debris', name: 'Geroell', kind: 'paint', where: 'nest', cell: NEST_CELL.DEBRIS },
+  { key: 'root', name: 'Wurzel', kind: 'paint', where: 'nest', cell: NEST_CELL.ROOT },
+  { key: 'chambercell', name: 'Kammer', kind: 'paint', where: 'nest', cell: NEST_CELL.CHAMBER },
+
   // --- Nahrung (nur Oberflaeche) ---------------------------------------
   { key: 'f_sugar', name: 'Zuckerwuerfel', kind: 'food', where: 'surface', cell: SURFACE_CELL.SUGARCUBE },
   { key: 'f_meat', name: 'Fleisch', kind: 'food', where: 'surface', cell: SURFACE_CELL.MEAT },
@@ -58,6 +75,7 @@ export const TOOL_DEFS = [
   { key: 'f_aphids', name: 'Blattlaeuse', kind: 'food', where: 'surface', cell: SURFACE_CELL.APHIDS },
   { key: 'f_fruit', name: 'Fallobst', kind: 'food', where: 'surface', cell: SURFACE_CELL.FRUIT },
   { key: 'f_carrion', name: 'Aas', kind: 'food', where: 'surface', cell: SURFACE_CELL.CARRION },
+  { key: 'f_seedcell', name: 'Samen', kind: 'food', where: 'surface', cell: SURFACE_CELL.SEEDS },
 
   // --- Mutagene ---------------------------------------------------------
   { key: 'm_fungus', name: 'Leuchtpilz', kind: 'paint', where: 'surface', cell: SURFACE_CELL.FUNGUS,
@@ -72,11 +90,22 @@ export const TOOL_DEFS = [
     hint: 'Neues Volk mit eigener Nest-Ebene' },
   { key: 'erase', name: 'Pheromon loeschen', kind: 'erase', where: 'surface',
     hint: 'Loescht alle Spuren der gewaehlten Kolonie im Pinselbereich' },
+  { key: 'brood', name: 'Brut', kind: 'brood', where: 'nest',
+    hint: 'Brut der gewaehlten Kolonie absetzen (Stadium und Zielkaste unten waehlbar)' },
+  { key: 'kill', name: 'Entfernen', kind: 'kill', where: 'both',
+    hint: 'Loescht Ameisen, Brut und Kreaturen im Pinselbereich' },
 
   // --- Kreaturen (aus der Artentabelle erzeugt) -------------------------
   ...SPECIES_LIST.map((sp) => ({
     key: 'c_' + sp.key, name: sp.name, kind: 'creature', where: 'surface',
     species: sp.key, hint: sp.desc,
+  })),
+
+  // --- Goettliche Eingriffe (aus der Tabelle in interventions.js) -------
+  ...INTERVENTIONS.map((iv) => ({
+    key: 'iv_' + iv.key, name: iv.name, kind: 'god',
+    where: iv.where === 'colony' ? 'both' : iv.where,
+    intervention: iv.key, icon: iv.icon, cost: iv.cost, hint: iv.desc,
   })),
 ];
 
@@ -88,6 +117,7 @@ const FOOD_KEY = {
   [SURFACE_CELL.APHIDS]: 'aphids',
   [SURFACE_CELL.FRUIT]: 'fruit',
   [SURFACE_CELL.CARRION]: 'carrion',
+  [SURFACE_CELL.SEEDS]: 'seeds',
 };
 
 export class Toolbar {
@@ -108,11 +138,34 @@ export class Toolbar {
     this.colonyId = 0;
     this.casteId = CASTE.WORKER;
     this.chamberType = CHAMBER.NONE;
+    /** Brutstadium fuer das Brut-Werkzeug (0 = Ei). */
+    this.broodStage = 0;
+    /** Staerke und Radius der goettlichen Eingriffe. */
+    this.power = GODMODE.DEFAULT_POWER;
+    this.radius = GODMODE.DEFAULT_RADIUS;
     this.signature = '';
     this._buttons = new Map();
   }
 
   get isPaintTool() { return this.current.kind !== 'select'; }
+
+  /**
+   * Radius der Vorschau. Eingriffe nutzen ihren eigenen Regler, alles
+   * andere den Pinsel – sonst zeigt der Kreis die falsche Wirkung an.
+   */
+  get previewRadius() { return this.current.kind === 'god' ? this.radius : this.brush; }
+
+  /** Farbe der Vorschau je nach Werkzeugart. */
+  previewColor() {
+    const k = this.current.kind;
+    if (k === 'god') return 0xffb347;
+    if (k === 'kill') return 0xff5a4d;
+    if (k === 'ants' || k === 'colony' || k === 'brood') {
+      const c = this.world.colonies.get(this.colonyId);
+      return c ? c.color : 0xffffff;
+    }
+    return 0x9ee6a8;
+  }
 
   setTool(key) {
     const t = TOOL_DEFS.find((d) => d.key === key);
@@ -143,7 +196,8 @@ export class Toolbar {
 
     const tools = TOOL_DEFS.filter((t) => t.where === 'both' || t.where === where);
     const groups = [
-      ['Allgemein', tools.filter((t) => t.kind === 'select' || t.kind === 'erase')],
+      ['Allgemein', tools.filter((t) => t.kind === 'select' || t.kind === 'erase'
+        || t.kind === 'kill')],
       [where === 'surface' ? 'Terrain' : 'Graben und Fuellen',
         tools.filter((t) => t.kind === 'paint' && !t.key.startsWith('m_'))],
       ['Nahrung', tools.filter((t) => t.kind === 'food')],
@@ -151,6 +205,8 @@ export class Toolbar {
       ['Bauen', tools.filter((t) => t.kind === 'order')],
       ['Einheiten', tools.filter((t) => t.kind === 'ants' || t.kind === 'colony')],
       ['Kreaturen', tools.filter((t) => t.kind === 'creature')],
+      ['Brut', tools.filter((t) => t.kind === 'brood')],
+      ['Eingriffe', tools.filter((t) => t.kind === 'god')],
     ];
 
     for (const [title, list] of groups) {
@@ -159,7 +215,9 @@ export class Toolbar {
     }
 
     this.el.appendChild(this._brushRow());
+    this.el.appendChild(this._godRow());
     this.el.appendChild(this._colonyRow());
+    if (where === 'nest') this.el.appendChild(this._broodRow());
     if (where === 'nest') this.el.appendChild(this._chamberRow());
     this._markActive();
   }
@@ -186,6 +244,16 @@ export class Toolbar {
         b.innerHTML = '<img src="' + this.sprites.dataURL('creature_' + t.species, 0) + '" alt="">'
           + '<span>' + t.name + '</span>';
         b.title = t.name + ' – ' + t.hint;
+      } else if (t.kind === 'god') {
+        b.innerHTML = this._iconHtml(t.icon, level) + '<span>' + t.name + '</span>';
+        b.title = t.name + ' – ' + t.hint + ' (Kosten ' + t.cost + ')';
+        b.classList.add('god');
+      } else if (t.kind === 'brood') {
+        b.innerHTML = '<img src="' + this.sprites.dataURL('brood_egg', 0) + '" alt="">'
+          + '<span>' + t.name + '</span>';
+      } else if (t.kind === 'kill') {
+        b.innerHTML = '<span class="glyph">\u2620</span><span>' + t.name + '</span>';
+        b.title = t.hint;
       } else if (t.kind === 'erase') {
         b.innerHTML = '<span class="glyph">\u2298</span><span>' + t.name + '</span>';
         b.title = t.hint;
@@ -206,6 +274,110 @@ export class Toolbar {
     box.appendChild(grid);
     return box;
   }
+
+  /**
+   * Symbol eines Eingriffs aufloesen. Erlaubte Formen:
+   *   'glyph:X'     – Zeichen, 'cell:key' – Terrainbild,
+   *   'creature:key'– Kreaturenbild, alles andere: Sprite-Name.
+   */
+  _iconHtml(icon, level) {
+    if (!icon) return '<span class="glyph">\u2726</span>';
+    if (icon.startsWith('glyph:')) return '<span class="glyph">' + icon.slice(6) + '</span>';
+    if (icon.startsWith('cell:')) {
+      const key = icon.slice(5);
+      const kind = level.kind;
+      const defs = kind === LEVEL_KIND.SURFACE ? SURFACE_CELL_DEFS : NEST_CELL_DEFS;
+      const def = defs.find((d) => d.key === key)
+        || SURFACE_CELL_DEFS.find((d) => d.key === key)
+        || NEST_CELL_DEFS.find((d) => d.key === key);
+      if (!def) return '<span class="glyph">\u2726</span>';
+      const useKind = defs.includes(def) ? kind : (SURFACE_CELL_DEFS.includes(def)
+        ? LEVEL_KIND.SURFACE : LEVEL_KIND.NEST);
+      return '<img src="' + cellSwatch(useKind, def.id, 0) + '" alt="">';
+    }
+    if (icon.startsWith('creature:')) {
+      return '<img src="' + this.sprites.dataURL('creature_' + icon.slice(9), 0) + '" alt="">';
+    }
+    return '<img src="' + this.sprites.dataURL(icon, 0) + '" alt="">';
+  }
+
+  /** Regler fuer Staerke und Radius der Eingriffe plus Energieanzeige. */
+  _godRow() {
+    const box = document.createElement('div');
+    box.className = 'tool-group';
+    box.innerHTML = '<h3>Wirkung der Eingriffe</h3>';
+
+    const mk = (label, min, max, step, value, onInput) => {
+      const row = document.createElement('div');
+      row.className = 'slider-row';
+      const l = document.createElement('label');
+      l.textContent = label;
+      const out = document.createElement('span');
+      out.className = 'slider-val';
+      out.textContent = String(value);
+      const inp = document.createElement('input');
+      inp.type = 'range';
+      inp.min = String(min); inp.max = String(max); inp.step = String(step);
+      inp.value = String(value);
+      inp.addEventListener('input', () => {
+        const v = Number(inp.value);
+        out.textContent = step < 1 ? v.toFixed(1) : String(v);
+        onInput(v);
+      });
+      row.appendChild(l); row.appendChild(inp); row.appendChild(out);
+      return row;
+    };
+
+    box.appendChild(mk('Kraft', GODMODE.POWER_RANGE[0], GODMODE.POWER_RANGE[1], 0.1,
+      this.power, (v) => { this.power = v; }));
+    box.appendChild(mk('Radius', GODMODE.RADIUS_RANGE[0], GODMODE.RADIUS_RANGE[1], 1,
+      this.radius, (v) => { this.radius = v; }));
+
+    const mode = document.createElement('div');
+    mode.className = 'tool-row';
+    const btn = document.createElement('button');
+    btn.className = 'btn tiny wide';
+    const sync = () => {
+      const challenge = this.world.godMode === 'challenge';
+      btn.textContent = challenge
+        ? 'Herausforderung: ' + Math.round(this.world.energy) + ' Energie'
+        : 'Sandkasten: unbegrenzt';
+      btn.classList.toggle('on', challenge);
+    };
+    btn.title = 'Umschalten: im Herausforderungsmodus kosten Eingriffe goettliche Energie,'
+      + ' die sich langsam auflaedt.';
+    btn.addEventListener('click', () => {
+      this.world.godMode = this.world.godMode === 'challenge' ? 'sandbox' : 'challenge';
+      sync();
+    });
+    sync();
+    this._godModeBtn = btn;
+    this._syncGodMode = sync;
+    mode.appendChild(btn);
+    box.appendChild(mode);
+    return box;
+  }
+
+  /** Auswahl des Brutstadiums fuer das Brut-Werkzeug. */
+  _broodRow() {
+    const box = document.createElement('div');
+    box.className = 'tool-group';
+    box.innerHTML = '<h3>Brutstadium</h3>';
+    const row = document.createElement('div');
+    row.className = 'tool-row wrap';
+    for (let i = 0; i < STAGE_NAMES.length; i++) {
+      const b = document.createElement('button');
+      b.className = 'btn tiny' + (i === this.broodStage ? ' on' : '');
+      b.textContent = STAGE_NAMES[i];
+      b.addEventListener('click', () => { this.broodStage = i; this.refreshColonyRow(); });
+      row.appendChild(b);
+    }
+    box.appendChild(row);
+    return box;
+  }
+
+  /** Energieanzeige auffrischen (jede Sekunde aus main.js). */
+  syncGodMode() { if (this._syncGodMode) this._syncGodMode(); }
 
   _brushRow() {
     const box = document.createElement('div');
@@ -368,6 +540,32 @@ export class Toolbar {
         this.colonyId = colony.id;
         this.game.onColonyFounded(colony);
         this.signature = '';
+        return true;
+      }
+      case 'brood': {
+        if (dragging) return false;
+        const n = world.spawnBroodAt(this.colonyId, level, cell.x, cell.y,
+          TOOLS.SPAWN_BROOD, this.broodStage, this.casteId);
+        if (n === 0) {
+          bus.logEvent(CAT.SYS, 'Hier ist kein Platz fuer Brut', { tick: world.tick });
+        }
+        return n > 0;
+      }
+      case 'kill': {
+        const n = world.removeUnitsAt(level, cell.x, cell.y, this.brush);
+        return n > 0;
+      }
+      case 'god': {
+        if (dragging) return false;
+        const res = world.applyIntervention(t.intervention, level, cell.x, cell.y, {
+          power: this.power, radius: this.radius,
+          colonyId: this.colonyId, chamberType: this.chamberType,
+        });
+        if (!res.ok) {
+          bus.logEvent(CAT.SYS, t.name + ': ' + res.reason, { tick: world.tick });
+          return false;
+        }
+        this.syncGodMode();
         return true;
       }
       default:

@@ -6,8 +6,8 @@
  * Gruppen sind thematisch sortiert und kommentiert.
  */
 
-export const VERSION = '0.1.0';
-export const PHASE = 1;
+export const VERSION = '1.0.0';
+export const PHASE = 10;
 
 /** Fest gepinnte PixiJS-Version (CDN). Siehe index.html importmap. */
 export const PIXI_VERSION = '8.21.0';
@@ -276,7 +276,7 @@ export const DIG = {
   /** Mindestabstand zum unteren Kartenrand. */
   BOTTOM_MARGIN: 6,
   /** Flow Fields, die pro Tick hoechstens neu berechnet werden. */
-  FIELD_BUDGET_PER_TICK: 1,
+  FIELD_BUDGET_PER_TICK: 3,
   /** Ticks, die eine Ameise hoechstens an einem Grabauftrag haengt. */
   JOB_TIMEOUT: 900,
   /** Ticks, die eine Ameise nach dem Abladen an der Oberflaeche bleibt. */
@@ -294,6 +294,8 @@ export const TOOLS = {
   SPAWN_ANTS: 15,
   /** Startpopulation einer per Werkzeug gegruendeten Kolonie. */
   FOUND_ANTS: 45,
+  /** Brut pro Klick mit dem Brut-Werkzeug. */
+  SPAWN_BROOD: 8,
 };
 
 // ---------------------------------------------------------------------------
@@ -401,7 +403,16 @@ export const NUTRITION = {
   /** Ticks zwischen zwei Bilanz-/KI-Durchlaeufen (gestaffelt). */
   UPDATE_INTERVAL: 15,
   /** Hunger je Tick ohne Zucker; ab 1.0 stirbt die Ameise. */
+  /**
+   * Umsatz von Fett in Energie, wenn der Zucker fehlt. Unter 1, weil die
+   * Umwandlung Verluste hat – eine fettreiche Kolonie ueberlebt eine
+   * Duerre, zahlt aber drauf.
+   */
+  FAT_TO_SUGAR: 0.8,
   HUNGER_RATE: 0.0016,
+  /** Streubreite der individuellen Hungertoleranz (Faktor auf die Schwelle 1). */
+  HUNGER_TOL_MIN: 0.80,
+  HUNGER_TOL_MAX: 1.60,
   /** Hunger, ab dem eine Ameise langsamer wird. */
   HUNGER_SLOW: 0.5,
   /** Speicherkapazitaet je Naehrstoff und Vorratskammerzelle. */
@@ -465,6 +476,13 @@ export const BROOD = {
   RICH_PROTEIN: 0.9,
   /** Bei extremem Mangel frisst die Kolonie eigene Eier. */
   CANNIBAL_BALANCE: 0.35,
+  /**
+   * Klaustrale Gruendung: bis zu so vielen Ameisen versorgt die Koenigin
+   * die Brut selbst aus dem Lager (siehe sim/brood.js).
+   */
+  CLAUSTRAL_WORKERS: 4,
+  /** Protein je Tick und Larve, das die Koenigin dabei zusteuert. */
+  CLAUSTRAL_RATE: 0.006,
 };
 
 export const LIFE = {
@@ -488,7 +506,13 @@ export const CREATURES = {
   DENSITY_SCALE: 1.0,
   /**
    * Artentabelle. energy = Nahrungsspeicher, drain = Verbrauch je Tick.
-   *   diet   : 'ants' | 'aphids' | 'plants' | 'carrion'
+   *   diet   : 'ants' (jagt Ameisen) | 'plants' (frisst Zellen)
+   *   eats   : Schluessel der Nahrungszellen fuer diet 'plants'
+   *            (Vorgabe: flower, fruit, carrion, aphids)
+   *   grazes : frisst die Zelle dabei auf, statt nur daran zu naschen
+   *   nocturnal/diurnal: Tagesrhythmus (siehe sim/daynight.js)
+   *   mows   : raeumt beim Grasen auch Pflanzen und Blueten ganz ab
+   *   ambush : lauert ohne Bauwerk und schlaegt aus dem Stand zu
    *   web/funnel: baut Netz bzw. Trichter
    *   entersNest: darf durch Portale in Nest-Ebenen
    */
@@ -497,7 +521,7 @@ export const CREATURES = {
       key: 'fly', name: 'Fliege', color: 0x8fa3b8,
       size: 0.8, hp: 0.6, speed: 2.2, damage: 0, sense: 6,
       energy: 46, drain: 0.006, breedAt: 36, breedCost: 20, maxAge: 9000,
-      diet: 'plants', prey: false, entersNest: false,
+      diet: 'plants', prey: false, entersNest: false, diurnal: true,
       art: { body: [2.6, 1.9], head: [1.5, 1.4], legs: 6, legLen: 3.4, wings: 2, shell: 0, jaws: 0, abdomen: [3.0, 2.0] },
       desc: 'Harmlos, schnell, vermehrt sich stark. Beute fuer Spinnen und Ameisen.',
     },
@@ -529,15 +553,75 @@ export const CREATURES = {
       key: 'beetle', name: 'Laufkaefer', color: 0x4a5a3c,
       size: 2.4, hp: 11, speed: 0.95, damage: 2.4, sense: 16,
       energy: 120, drain: 0.012, breedAt: 100, breedCost: 60, maxAge: 44000,
-      diet: 'ants', prey: true, entersNest: true, digsEntrance: true,
+      diet: 'ants', prey: true, entersNest: true, digsEntrance: true, nocturnal: true,
+      eats: ['aphids', 'carrion'],
       art: { body: [3.2, 2.6], head: [1.8, 1.7], legs: 6, legLen: 3.6, wings: 0, shell: 2, jaws: 1.6, abdomen: [4.2, 3.2] },
       desc: 'Nachtaktiv, frisst auch Blattlaeuse und graebt eigene Zugaenge.',
+    },
+    {
+      key: 'caterpillar', name: 'Raupe', color: 0x7fae4c,
+      size: 2.0, hp: 14, speed: 0.30, damage: 0, sense: 7,
+      energy: 130, drain: 0.0035, breedAt: 118, breedCost: 70, maxAge: 26000,
+      diet: 'plants', prey: false, entersNest: false, grazes: true, mows: true,
+      eats: ['plant'],
+      art: { body: [3.4, 2.8], head: [1.8, 1.8], legs: 6, legLen: 1.8, wings: 0, shell: 0, jaws: 0.4, abdomen: [5.2, 3.0] },
+      desc: 'Frisst Pflanzen kahl. Wehrlos, aber zaeh – eine wandernde Fleischportion.',
+    },
+    {
+      key: 'ladybug', name: 'Marienkaefer', color: 0xc8402f,
+      size: 1.1, hp: 3.5, speed: 1.0, damage: 0, sense: 12,
+      energy: 70, drain: 0.006, breedAt: 58, breedCost: 34, maxAge: 20000,
+      diet: 'plants', prey: false, entersNest: false, grazes: true, diurnal: true,
+      eats: ['aphids', 'flower'],
+      art: { body: [2.4, 2.2], head: [1.4, 1.3], legs: 6, legLen: 2.6, wings: 1, shell: 2, jaws: 0.5, abdomen: [3.2, 3.0] },
+      desc: 'Frisst Blattlaeuse weg – steht damit in direkter Nahrungskonkurrenz zu den Ameisen.',
+    },
+    {
+      key: 'woodlouse', name: 'Assel', color: 0x6b6f78,
+      size: 1.0, hp: 4.5, speed: 0.55, damage: 0, sense: 6,
+      energy: 64, drain: 0.0035, breedAt: 52, breedCost: 30, maxAge: 30000,
+      diet: 'plants', prey: false, entersNest: true, grazes: true, nocturnal: true,
+      eats: ['carrion', 'fruit'],
+      art: { body: [2.6, 2.2], head: [1.3, 1.2], legs: 8, legLen: 1.6, wings: 0, shell: 2, jaws: 0.3, abdomen: [3.4, 2.6] },
+      desc: 'Zersetzer. Raeumt Aas weg, bevor die Ameisen es holen, und wandert auch ins Nest.',
+    },
+    {
+      key: 'earwig', name: 'Ohrwurm', color: 0x93502a,
+      size: 1.5, hp: 7, speed: 1.05, damage: 1.8, sense: 13,
+      energy: 88, drain: 0.008, breedAt: 74, breedCost: 42, maxAge: 32000,
+      diet: 'ants', prey: true, entersNest: true, nocturnal: true,
+      eats: ['fruit', 'carrion'],
+      art: { body: [2.8, 2.0], head: [1.6, 1.4], legs: 6, legLen: 2.8, wings: 0, shell: 1, jaws: 2.4, abdomen: [4.0, 2.4] },
+      desc: 'Zangenjaeger. Dringt gern in Nester ein und holt sich Brut aus den Kammern.',
+    },
+    {
+      key: 'wasp', name: 'Wespe', color: 0xe0b020,
+      size: 1.4, hp: 5, speed: 2.0, damage: 3.6, sense: 22,
+      energy: 95, drain: 0.012, breedAt: 82, breedCost: 48, maxAge: 22000,
+      diet: 'ants', prey: true, entersNest: false, diurnal: true,
+      eats: ['flower', 'fruit', 'carrion'],
+      art: { body: [2.6, 1.8], head: [1.5, 1.4], legs: 6, legLen: 3.0, wings: 2, shell: 0, jaws: 1.4, abdomen: [3.8, 2.2] },
+      desc: 'Schneller Luftjaeger. Toedlich im offenen Feld, geht aber nie unter die Erde.',
+    },
+    {
+      key: 'mantis', name: 'Gottesanbeterin', color: 0x66a05a,
+      size: 2.6, hp: 20, speed: 0.75, damage: 4.2, sense: 11,
+      energy: 150, drain: 0.005, breedAt: 130, breedCost: 80, maxAge: 48000,
+      diet: 'ants', prey: true, entersNest: false, ambush: true,
+      art: { body: [3.0, 2.2], head: [1.8, 1.6], legs: 6, legLen: 5.6, wings: 1, shell: 0, jaws: 3.6, abdomen: [5.0, 2.6] },
+      desc: 'Lauert regungslos und schlaegt aus dem Stand zu. Apexraeuber:'
+        + ' toedlich, aber als Lauerjaegerin mit kurzer Sichtweite nicht'
+        + ' selbsterhaltend – auf Dauer haelt sie sich nur, wenn der Spieler'
+        + ' nachsetzt oder Beute in ihre Naehe geraet.',
     },
   ],
   /** Obergrenze je Art als Vielfaches des Startbesatzes. */
   POP_CAP: 2.2,
   /** Startbesatz je Art auf einer frischen Karte. */
-  START: { fly: 45, orbweaver: 8, wolfspider: 6, antlion: 5, beetle: 4 },
+  START: {
+    fly: 45, orbweaver: 8, wolfspider: 6, antlion: 5, beetle: 4,
+    caterpillar: 8, ladybug: 6, woodlouse: 12, earwig: 4, wasp: 4, mantis: 2,
+  },
   /** Kreaturen mutieren bei der Fortpflanzung (eigene kleine Evolution). */
   MUTATION: 0.06,
   /** Ameisen greifen Raeuber an, wenn mindestens so viele in der Naehe sind. */
@@ -560,6 +644,25 @@ export const CREATURES = {
   FEED_TICKS: 260,
   /** Mindestabstand des Startbesatzes zu Nesteingaengen (Zellen). */
   START_MIN_DIST: 55,
+  /**
+   * Weidegang: Wahrscheinlichkeit je Tick und Bissgroesse.
+   *
+   * Beim ersten Anlauf waren das 0.05 und 4 Einheiten. Ein Dutzend
+   * Marienkaefer nahm den Blattlaeusen damit rund 2.6 Einheiten pro Tick ab
+   * – mehr als nachwuchs. Die Ameisen fanden spaeter keinen Zucker mehr und
+   * das Volk verhungerte nach etwa 35 Minuten. Jetzt ist der Frassdruck
+   * klein genug, dass er als Konkurrenz spuerbar ist, ohne die Quelle zu
+   * vernichten.
+   */
+  GRAZE_CHANCE: 0.03,
+  GRAZE_BITE: 1,
+  /** Zellen um einen Nesteingang, die Raeuber bei der Spursuche meiden. */
+  PORTAL_AVOID: 18,
+  /** Pflanzen breiten sich aus: geprueft alle N Ticks. */
+  PLANT_REGROW_INTERVAL: 150,
+  /** Stichproben je Durchlauf und Wahrscheinlichkeit, dass eine greift. */
+  PLANT_REGROW_SAMPLES: 220,
+  PLANT_REGROW_CHANCE: 0.52,
 };
 
 // ===========================================================================
@@ -593,6 +696,8 @@ export const GENES = [
 ];
 
 export const EVO = {
+  /** Mitgift einer Jungkoenigin [Zucker, Protein, Fett]. */
+  DOWRY: [140, 110, 70],
   /** Grundstreuung der Mutation. */
   SIGMA_BASE: 0.055,
   SIGMA_MAX: 0.30,
@@ -666,4 +771,250 @@ export const RESEARCH = {
   PREDATOR_STEPS: [0, 0.5, 1, 2, 4],
   /** Generationen, die "Generation ueberspringen" auf einmal rechnet. */
   FAST_FORWARD_TICKS: 9000,
+};
+
+// ===========================================================================
+// PHASE 6 – STABILITAET UND BEFESTIGUNGEN
+// ===========================================================================
+export const STABILITY = {
+  /**
+   * Tragbare Deckenspannweite je Zelltyp (Zellen). Laeuft eine Decke
+   * weiter, ohne dass darunter etwas steht, stuerzt sie ein.
+   */
+  MAX_SPAN: {
+    soil: 7, hardsoil: 11, stone: 99, root: 13, pebble: 8,
+    reinforced: 24, pillar: 99, resin: 9, plug: 7, debris: 5, topsoil: 14,
+  },
+  /** Wahrscheinlichkeit, dass eine ueberspannte Zelle bei der Pruefung faellt. */
+  COLLAPSE_CHANCE: 0.30,
+  /** Radius einer lokalen Pruefung nach dem Graben. */
+  CHECK_RADIUS: 7,
+  /** Hoechstzahl Pruefungen pro Tick (Warteschlange). */
+  MAX_CHECKS_PER_TICK: 2,
+  /** Ticks, die eine verschuettete Einheit zum Freigraben braucht. */
+  BURY_TICKS: 120,
+  /** Schaden beim Verschuetten. */
+  BURY_DAMAGE: 0.6,
+  /** Abstand, in dem die Kolonie in breiten Kammern Pfeiler setzt. */
+  PILLAR_SPACING: 5,
+  /** Ab dieser Kammerbreite baut die Kolonie ueberhaupt Pfeiler. */
+  PILLAR_MIN_WIDTH: 8,
+};
+
+export const FORTIFY = {
+  /** Materialkosten je Befestigungszelle. */
+  COST: {
+    reinforced: { pebble: 2, soil: 0 },
+    pillar: { pebble: 3 },
+    resin: { resin: 2 },
+    plug: { pebble: 2 },
+    wall: { pebble: 2 },
+  },
+  /** Bauaufwand (Punkte wie beim Graben). */
+  EFFORT: { reinforced: 120, pillar: 140, resin: 90, plug: 70, wall: 80 },
+  /** Ticks zwischen zwei Planungsschritten der Verteidigung. */
+  PLAN_INTERVAL: 90,
+  /** Ab dieser Bedrohungsstufe wird ueberhaupt befestigt. */
+  MIN_THREAT: 1,
+  /** Gen "verteidigung", ab dem auch im Frieden vorgebaut wird. */
+  PREEMPTIVE_GENE: 0.6,
+  /** Hoechstzahl offener Bauauftraege je Kolonie. */
+  MAX_ORDERS: 220,
+  /** Kiesel je abgebauter Kieselzelle. */
+  PEBBLE_PER_CELL: 3,
+  /** Harz je Ernte an einer Pflanze. */
+  RESIN_PER_HARVEST: 2,
+  /** Ticks, bis eine Pflanze wieder Harz gibt. */
+  RESIN_REGROW: 900,
+};
+
+// ===========================================================================
+// PHASE 5 – KAMPF, BEDROHUNG UND RAUBZUEGE
+// ===========================================================================
+export const COMBAT = {
+  /** Reichweite eines Nahkampfangriffs in Zellen. */
+  REACH: 1.3,
+  /** Grundschaden pro Tick = Kastenschaden * DAMAGE_SCALE. */
+  DAMAGE_SCALE: 0.09,
+  /** Panzerung: Schadensminderung bei Gen 1.0. */
+  ARMOR_MAX: 0.6,
+  /** Zuckermangel senkt die Kampfkraft bis auf diesen Anteil. */
+  HUNGER_PENALTY: 0.45,
+  /**
+   * Jede Ameise prueft nur alle CHECK_EVERY Ticks auf Feinde, nach Index
+   * versetzt. Bei 5000 Ameisen sind das rund 600 Abfragen pro Tick statt
+   * 5000 – ohne dass ein Kampf spuerbar spaeter beginnt.
+   */
+  CHECK_EVERY: 8,
+  /** Sichtweite fuer Feinde. */
+  SIGHT: 6,
+  /** In Engstellen (wenige freie Nachbarn) kaempft nur die vorderste Reihe. */
+  NARROW_NEIGHBOURS: 3,
+  /** Ticks, die eine Ameise einem Feind nachsetzt. */
+  PURSUE_TICKS: 240,
+  /** Unter diesem HP-Anteil zieht sich eine Ameise zurueck (mal Gen). */
+  RETREAT_HP: 0.35,
+
+  /** Bedrohungsstufen: Radien um die Eingaenge. */
+  THREAT_NEAR: 26,
+  THREAT_AT_GATE: 7,
+  /** Ticks zwischen zwei Bedrohungsauswertungen. */
+  THREAT_INTERVAL: 20,
+
+  /** Raubzuege. */
+  RAID_MIN_POP: 90,
+  RAID_MIN_SOLDIERS: 8,
+  RAID_INTERVAL: 3600,
+  RAID_SQUAD: [8, 26],
+  /** Proteinbilanz, unter der auch friedliche Voelker raubziehen. */
+  RAID_HUNGER: 0.7,
+  /** Ticks, nach denen ein Raubzug aufgibt und heimkehrt. */
+  RAID_TIMEOUT: 5400,
+  /** Protein je erbeuteter Brut. */
+  LOOT_BROOD: 9,
+  /** Nahrung je Zugriff auf eine fremde Vorratskammer. */
+  LOOT_STORE: 25,
+};
+
+// ===========================================================================
+// PHASE 4 – KINOMODUS UND FRONTVERFOLGUNG
+// ===========================================================================
+export const CINEMA = {
+  /** Millisekunden zwischen zwei Spruengen. */
+  INTERVAL_MS: 9000,
+  /** Kategorien, die als sehenswert gelten. */
+  CATEGORIES: ['kampf', 'evolution', 'katastrophe', 'raeuber'],
+  /** Zoom, mit dem angeflogen wird. */
+  ZOOM: 5,
+  /** Ticks, die ein Ereignis hoechstens alt sein darf. */
+  MAX_AGE: 1800,
+  /** Frontverfolgung: so viele Kaempfende muessen es mindestens sein. */
+  FRONT_MIN_ANTS: 4,
+  /** Anteil der Reststrecke, den die Kamera je Sekunde aufholt. */
+  FRONT_GLIDE: 3.0,
+};
+
+// ===========================================================================
+// PHASE 10 – TAG UND NACHT, TEILCHEN, TON, EINSTELLUNGEN
+// ===========================================================================
+export const DAYNIGHT = {
+  /** Eingeschaltet? Kann in den Einstellungen abgeschaltet werden. */
+  ENABLED: true,
+  /**
+   * Ticks fuer einen vollen Tag. 10800 = 6 Minuten bei 1x, 36 Sekunden bei
+   * 10x – lang genug, um Nacht als Phase zu erleben, kurz genug, um bei
+   * einer Sitzung mehrere Zyklen zu sehen.
+   */
+  CYCLE_TICKS: 10800,
+  /**
+   * Anteile des Tages. 0 ist Mitternacht, 0.5 ist Mittag – die Uhr in der
+   * Kopfzeile rechnet den Anteil direkt in eine Uhrzeit um, deshalb muessen
+   * die Schwellen zu plausiblen Zeiten passen (Morgengrauen 06:29,
+   * Abenddaemmerung ab 18:43, Nacht ab 20:38).
+   */
+  DAWN: 0.27,
+  DAY_END: 0.78,
+  DUSK: 0.86,
+  /** Helligkeit tagsueber und tiefste Helligkeit nachts (0..1). */
+  DAY_LIGHT: 1.0,
+  NIGHT_LIGHT: 0.34,
+  /** Farbe der Nachtblende und des Daemmerungsschimmers. */
+  NIGHT_TINT: 0x0d1a33,
+  DUSK_TINT: 0x4a2a18,
+  /** Wie stark tagaktive bzw. nachtaktive Arten gebremst werden. */
+  ACTIVITY_MIN: 0.30,
+  /** Sammelrate der Ameisen bei voller Nacht (1 = kein Einfluss). */
+  ANT_NIGHT_SPEED: 0.72,
+};
+
+export const PARTICLES = {
+  ENABLED: true,
+  /** Obergrenze gleichzeitiger Teilchen (Ringpuffer, keine Allokation). */
+  MAX: 700,
+  /** Lebensdauer in Frames je Sorte. */
+  LIFE: { dust: 48, spark: 32, splash: 34, gore: 40, leaf: 110 },
+  /** Groesse in Weltpixeln. */
+  SIZE: { dust: 2.2, spark: 2.0, splash: 2.4, gore: 2.0, leaf: 2.6 },
+  /** Teilchen je Ereignis. */
+  BURST: { dig: 3, collapse: 14, lightning: 26, meteor: 40, death: 6, blast: 30 },
+  GRAVITY: 0.06,
+  DRAG: 0.93,
+};
+
+export const AUDIO = {
+  /** Ton ist optional. Fehlt eine Datei, bleibt es still – ohne Fehler. */
+  ENABLED: false,
+  VOLUME: 0.5,
+  DIR: 'assets/sfx/',
+  /** Ereignis -> Dateiname (ohne Pfad). */
+  FILES: {
+    click: 'click.wav',
+    dig: 'dig.wav',
+    collapse: 'collapse.wav',
+    fight: 'fight.wav',
+    thunder: 'thunder.wav',
+    alarm: 'alarm.wav',
+  },
+  /** Mindestabstand in ms zwischen zwei gleichen Toenen. */
+  THROTTLE_MS: 120,
+};
+
+export const SETTINGS_DEFAULTS = {
+  daynight: true,
+  particles: true,
+  shake: true,
+  sound: false,
+  volume: 0.5,
+  transition: true,
+  interpolate: true,
+  autosave: false,
+};
+
+/** Schluessel im localStorage. */
+export const STORAGE = {
+  SETTINGS: 'formicarium.settings',
+  SAVE: 'formicarium.save',
+};
+
+// ===========================================================================
+// PHASE 9 – GOETTLICHE EINGRIFFE
+// ===========================================================================
+export const GODMODE = {
+  /** "sandbox" = unbegrenzt, "challenge" = goettliche Energie laedt auf. */
+  DEFAULT_MODE: 'sandbox',
+  ENERGY_MAX: 100,
+  /** Energie pro Sekunde im Herausforderungsmodus. */
+  ENERGY_REGEN: 1.2,
+  /** Voreingestellte Staerke und Radius (per UI verstellbar). */
+  DEFAULT_RADIUS: 14,
+  DEFAULT_POWER: 1.0,
+  RADIUS_RANGE: [3, 60],
+  POWER_RANGE: [0.2, 3],
+
+  QUAKE_NEST_RADIUS: 40,
+  FLOOD_DEPTH: 26,
+  FLOOD_DAMAGE: 0.05,
+  WATER_DRY_INTERVAL: 90,
+  WATER_DRY_CHANCE: 0.06,
+  DROUGHT_TICKS: 5400,
+  RAIN_TICKS: 2700,
+  PLAGUE_TICKS: 3600,
+  PLAGUE_DAMAGE: 0.0016,
+  PLAGUE_SPREAD: 0.02,
+  FRENZY_TICKS: 1800,
+  FRENZY_SPEED: 1.6,
+  BLESSING_HEAL: 1.0,
+  METEOR_CRATER: 0.6,
+  LIGHTNING_DAMAGE: 12,
+  REINFORCE_COUNT: 25,
+  SWARM_COUNT: 10,
+  FOODRAIN_AMOUNT: 200,
+  /** "Vorrat fuellen": Zuckereinheiten (Protein und Fett anteilig). */
+  SUPPLY_AMOUNT: 400,
+  /** "Brutschub": Zahl der gesetzten Eier. */
+  BROOD_COUNT: 25,
+  /** Schaden einer Sprengung an Einheiten im Radius. */
+  BLAST_DAMAGE: 14,
+  /** Staerke der kuenstlichen Duftspur je Zelle. */
+  SCENT_AMOUNT: 180,
 };

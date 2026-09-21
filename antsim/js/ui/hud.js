@@ -34,10 +34,16 @@ export class Hud {
     refs.help.addEventListener('click', () => game.togglePanel('help'));
     refs.inspClose.addEventListener('click', () => game.clearSelection());
 
+    if (refs.pip) refs.pip.addEventListener('click', () => game.togglePip());
+    if (refs.cinema) refs.cinema.addEventListener('click', () => game.toggleCinema());
+    if (refs.autojump) refs.autojump.addEventListener('click', () => game.toggleAutoJump());
+    if (refs.front) refs.front.addEventListener('click', () => game.toggleFront());
     if (refs.research) refs.research.addEventListener('click', () => game.togglePanel('research'));
     if (refs.stats) refs.stats.addEventListener('click', () => game.togglePanel('stats'));
     if (refs.researchClose) refs.researchClose.addEventListener('click', () => game.togglePanel('research'));
     if (refs.statsClose) refs.statsClose.addEventListener('click', () => game.togglePanel('stats'));
+    if (refs.settingsBtn) refs.settingsBtn.addEventListener('click', () => game.togglePanel('settings'));
+    if (refs.settingsClose) refs.settingsClose.addEventListener('click', () => game.togglePanel('settings'));
     if (refs.pheroGroup) {
       this.pheroButtons = [...refs.pheroGroup.querySelectorAll('[data-phero]')];
       this.pheroButtons.forEach((b) => {
@@ -61,8 +67,13 @@ export class Hud {
     this.refs.trans.classList.toggle('on', state.transition);
     this.refs.legendBtn.classList.toggle('on', state.legend);
     this.refs.help.classList.toggle('on', state.help);
+    if (this.refs.pip) this.refs.pip.classList.toggle('on', !!state.pip);
+    if (this.refs.cinema) this.refs.cinema.classList.toggle('on', state.cinema);
+    if (this.refs.autojump) this.refs.autojump.classList.toggle('on', state.autoJump);
+    if (this.refs.front) this.refs.front.classList.toggle('on', !!state.front);
     if (this.refs.research) this.refs.research.classList.toggle('on', state.research);
     if (this.refs.stats) this.refs.stats.classList.toggle('on', state.stats);
+    if (this.refs.settingsBtn) this.refs.settingsBtn.classList.toggle('on', !!state.settings);
     if (this.pheroButtons) {
       this.pheroButtons.forEach((b, i) => b.classList.toggle('on', state.phero[i]));
     }
@@ -86,8 +97,14 @@ const HELP_HTML = `
 <tr><td>Mittlere Maustaste</td><td>Karte ziehen (immer)</td></tr>
 <tr><td><kbd>L</kbd></td><td>Legende ein/aus</td></tr>
 <tr><td><kbd>G</kbd></td><td>Chunk-Raster ein/aus</td></tr>
+<tr><td><kbd>B</kbd></td><td>Bild-in-Bild (andere Ebene beobachten)</td></tr>
+<tr><td><kbd>C</kbd></td><td>Kinomodus</td></tr>
+<tr><td><kbd>F</kbd></td><td>ausgewaehlter Einheit folgen</td></tr>
+<tr><td><kbd>K</kbd></td><td>Kamera folgt dem Schwerpunkt der Kaempfe</td></tr>
 <tr><td><kbd>R</kbd></td><td>Forschungsmenue (Evolution im Zeitraffer)</td></tr>
 <tr><td><kbd>T</kbd></td><td>Stammbaum und Statistik</td></tr>
+<tr><td><kbd>O</kbd></td><td>Einstellungen und Spielstaende</td></tr>
+<tr><td><kbd>Strg</kbd>+<kbd>S</kbd> / <kbd>Strg</kbd>+<kbd>L</kbd></td><td>schnell speichern / laden</td></tr>
 <tr><td><kbd>P</kbd></td><td>Nahrungsspuren einblenden</td></tr>
 <tr><td><kbd>F3</kbd></td><td>Performance-Overlay</td></tr>
 <tr><td><kbd>F4</kbd></td><td>Debug-Menue</td></tr>

@@ -16,7 +16,7 @@
  * dass sich Linien in Phase 8 auseinanderentwickeln.
  */
 
-import { FOOD, NUTRIENT } from '../config.js';
+import { FOOD, CREATURES, NUTRIENT } from '../config.js';
 import { SURFACE_CELL, SURFACE_CELL_DEFS, FOOD_OF_CELL } from './surface.js';
 import { fbm, hash2 } from '../rng.js';
 
@@ -53,6 +53,30 @@ export class FoodSystem {
       count: 0,
       flag: new Uint8Array(level.w * level.h),
     });
+  }
+
+  /**
+   * Register aus einem fertigen Gitter neu aufbauen (nach dem Laden eines
+   * Speicherstands). Danach stimmt die Liste der Quellen wieder mit den
+   * Zellen ueberein.
+   */
+  reindex(level) {
+    if (!level) return 0;
+    this.reg.delete(level.id);
+    this.registerLevel(level);
+    const r = this.reg.get(level.id);
+    const cells = level.cells;
+    let total = 0;
+    for (let i = 0; i < cells.length; i++) {
+      if (!isFoodCell(cells[i])) continue;
+      if (r.count >= r.list.length) break;
+      r.flag[i] = 1;
+      r.list[r.count++] = i;
+      total += level.meta[i];
+    }
+    this.stats.sources = r.count;
+    this.stats.total = total;
+    return r.count;
   }
 
   /** Quelle setzen oder auffuellen. */
@@ -110,8 +134,9 @@ export class FoodSystem {
   }
 
   /** Nachwachsen und Verderben (alle FOOD.REGROW_INTERVAL Ticks). */
-  update(level, tick) {
+  update(level, tick, regrowScale) {
     if (tick % FOOD.REGROW_INTERVAL !== 0) return;
+    const scale = regrowScale !== undefined ? regrowScale : FOOD.REGROW_SCALE;
     const r = this.reg.get(level.id);
     if (!r) return;
     const cells = level.cells, meta = level.meta, w = level.w;
@@ -123,7 +148,7 @@ export class FoodSystem {
       const prof = PROFILE[type];
       if (!prof) { r.flag[i] = 0; continue; }          // Zelle ist keine Quelle mehr
       let amt = meta[i];
-      if (prof.regrow > 0) amt += prof.regrow * FOOD.REGROW_SCALE;
+      if (prof.regrow > 0) amt += prof.regrow * scale;
       if (prof.decay > 0) amt -= prof.decay;
       if (amt > prof.max) amt = prof.max;
       if (amt < 0) amt = 0;
@@ -146,6 +171,46 @@ export class FoodSystem {
     r.count = write;
     this.stats.sources = write;
     this.stats.total = total;
+  }
+
+  /**
+   * Pflanzen breiten sich langsam aus.
+   *
+   * Ohne das waere die Vegetation eine endliche Ressource: Raupen und
+   * Marienkaefer wuerden die Karte kahl fressen und danach aussterben, und
+   * Radnetzspinnen faenden keine Ankerpunkte mehr. Mit der Ausbreitung gibt
+   * es eine echte Produzentenschicht, auf der die Nahrungskette steht.
+   *
+   * Die Rate haengt am Licht (Tag-Nacht-Zyklus). Der Grundwert in der
+   * Konfiguration ist deshalb um den Kehrwert der mittleren Tageshelligkeit
+   * angehoben, damit der Tagesdurchschnitt gleich bleibt.
+   *
+   * @param {import('./levels.js').Level} level
+   * @param {import('../rng.js').RNG} rng
+   * @param {number} tick
+   */
+  regrowVegetation(level, rng, tick, light = 1) {
+    if (tick % CREATURES.PLANT_REGROW_INTERVAL !== 0) return 0;
+    let grown = 0;
+    for (let k = 0; k < CREATURES.PLANT_REGROW_SAMPLES; k++) {
+      const x = rng.intRange(1, level.w - 2);
+      const y = rng.intRange(1, level.h - 2);
+      const c = level.cells[y * level.w + x];
+      if (c !== SURFACE_CELL.GRASS && c !== SURFACE_CELL.DIRT) continue;
+      // Nur neben bestehendem Gruen – so wachsen Flecken, keine Sprenkel
+      let near = 0;
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const n = level.get(x + dx, y + dy);
+          if (n === SURFACE_CELL.PLANT || n === SURFACE_CELL.FLOWER) near++;
+        }
+      }
+      if (near === 0) continue;
+      if (!rng.chance(CREATURES.PLANT_REGROW_CHANCE * light * Math.min(1, near / 4))) continue;
+      level.set(x, y, rng.chance(0.15) ? SURFACE_CELL.FLOWER : SURFACE_CELL.PLANT);
+      grown++;
+    }
+    return grown;
   }
 
   /**

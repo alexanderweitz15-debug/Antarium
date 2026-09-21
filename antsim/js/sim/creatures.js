@@ -25,6 +25,7 @@ import { SURFACE_CELL } from './surface.js';
 import { ANT_STATE, CARRY } from './ants.js';
 import { PH } from './pheromones.js';
 import { casteDef } from './castes.js';
+import { activityFor } from './daynight.js';
 import { bus, CAT } from './events.js';
 
 export const CSTATE = { WANDER: 0, HUNT: 1, FEED: 2, LURK: 3, FLEE: 4 };
@@ -33,6 +34,25 @@ export const CSTATE_LABEL = { 0: 'Streift umher', 1: 'Jagt', 2: 'Frisst', 3: 'La
 const SPECIES = CREATURES.SPECIES;
 export const SPECIES_BY_KEY = new Map(SPECIES.map((s, i) => [s.key, { ...s, id: i }]));
 export const SPECIES_LIST = SPECIES.map((s, i) => ({ ...s, id: i }));
+
+/**
+ * Nahrungszellen je Art, einmal aus den Schluesseln in CREATURES.SPECIES
+ * aufgeloest. Ohne Angabe gilt der alte Standard der Fliege.
+ */
+const DEFAULT_EATS = [SURFACE_CELL.FLOWER, SURFACE_CELL.FRUIT,
+  SURFACE_CELL.CARRION, SURFACE_CELL.APHIDS];
+const EATS_BY_SPECIES = SPECIES.map((sp) => {
+  if (sp.eats) return sp.eats.map((k) => SURFACE_CELL[k.toUpperCase()]).filter((v) => v !== undefined);
+  // Pflanzenfresser ohne Angabe nehmen alles Essbare, Jaeger nichts.
+  return sp.diet === 'plants' ? DEFAULT_EATS : [];
+});
+/** Schnelle Abfrage: frisst Art id diesen Zelltyp? */
+const EATS_TABLE = SPECIES.map((sp, i) => {
+  const t = new Uint8Array(64);
+  for (const c of EATS_BY_SPECIES[i]) t[c] = 1;
+  void sp;
+  return t;
+});
 
 export class Creatures {
   constructor(capacity = CREATURES.MAX) {
@@ -141,6 +161,9 @@ export class Creatures {
     }
   }
 
+  /** Artdefinition einer Kreatur. */
+  speciesDef(i) { return SPECIES_LIST[this.species[i]]; }
+
   forEachOnLevel(levelId, cb) {
     const b = this.buckets.get(levelId);
     if (!b) return;
@@ -186,6 +209,9 @@ export class Creatures {
        * aufreibt.
        */
       const hungry = this.energy[i] < sp.energy * CREATURES.HUNT_HUNGER;
+      // Wer zur falschen Tageszeit unterwegs ist, jagt auch weniger
+      const awake = level.kind !== LEVEL_KIND.SURFACE ? 1
+        : activityFor(sp, ctx.light !== undefined ? ctx.light : 1);
 
       // --- Stoffwechsel --------------------------------------------------
       this.energy[i] -= sp.drain * (0.7 + this.gSpeed[i] * 0.6);
@@ -268,7 +294,10 @@ export class Creatures {
           break;
 
         case CSTATE.HUNT:
-          if (nearest < 0 || !hungry) { this.state[i] = sp.funnel || sp.web ? CSTATE.LURK : CSTATE.WANDER; break; }
+          if (nearest < 0 || !hungry) {
+            this.state[i] = (sp.funnel || sp.web || sp.ambush) ? CSTATE.LURK : CSTATE.WANDER;
+            break;
+          }
           this.dir[i] = Math.atan2(ants.y[nearest] - this.y[i], ants.x[nearest] - this.x[i]);
           break;
 
@@ -280,6 +309,11 @@ export class Creatures {
             this.home[i] = -1;
             break;
           }
+          if (nearest >= 0 && nearestD < 5 * 5 && sp.ambush && hungry) {
+            // Aus dem Stand zuschlagen: kurzer, schneller Ausfall
+            this.dir[i] = Math.atan2(ants.y[nearest] - this.y[i], ants.x[nearest] - this.x[i]);
+            speedScale = 2.2;
+          }
           if (nearest >= 0 && nearestD < 6 * 6 && sp.web) {
             // Netzspinne rueckt nur im eigenen Netz vor
             this.dir[i] = Math.atan2(ants.y[nearest] - this.y[i], ants.x[nearest] - this.x[i]);
@@ -290,7 +324,7 @@ export class Creatures {
 
         default: {
           // WANDER: gelegentlich Richtung wechseln, Beute aufnehmen
-          if (hungry && nearest >= 0 && rng.chance(0.08 + this.gAggr[i] * 0.2)) {
+          if (hungry && nearest >= 0 && rng.chance((0.08 + this.gAggr[i] * 0.2) * awake)) {
             this.state[i] = CSTATE.HUNT;
             break;
           }
@@ -298,18 +332,35 @@ export class Creatures {
           // Hungrig wird gezielt gesucht – sonst verhungern Raeuber auf einer
           // 400x400-Karte, weil sie zufaellig nie an Beute vorbeikommen.
           if (hungry && ((ctx.tick + i) & 31) === 0) this._seek(i, level, ctx, sp);
-          if (sp.diet === 'plants') {
-            // Fliegen sammeln Energie an Bluete, Aas und Fallobst
-            const c = level.cells[(this.y[i] | 0) * level.w + (this.x[i] | 0)];
-            if (c === SURFACE_CELL.FLOWER || c === SURFACE_CELL.FRUIT || c === SURFACE_CELL.CARRION
-                || c === SURFACE_CELL.APHIDS) {
+          if (EATS_BY_SPECIES[this.species[i]].length > 0) {
+            /**
+             * Auf einer passenden Nahrungszelle wird getankt. Das gilt auch
+             * fuer Jaeger mit Nebennahrung (Wespe an Fallobst, Laufkaefer an
+             * Blattlaeusen) – ohne das verhungern die teuren Arten zwischen
+             * zwei Beutetieren.
+             */
+            const tbl = EATS_TABLE[this.species[i]];
+            const ci = (this.y[i] | 0) * level.w + (this.x[i] | 0);
+            const c = level.cells[ci];
+            if (c < tbl.length && tbl[c]) {
               this.energy[i] = Math.min(sp.energy * 1.5, this.energy[i] + 0.55);
               speedScale = 0.2;
+              /**
+               * Weidegaenger fressen die Zelle wirklich auf. Damit wird der
+               * Marienkaefer zum echten Nahrungskonkurrenten der Ameisen und
+               * die Raupe frisst Pflanzen kahl – sichtbare Folgen statt
+               * unsichtbarer Zahlen.
+               */
+              if (sp.grazes && isSurface && rng.chance(CREATURES.GRAZE_CHANCE)) {
+                this._graze(i, level, this.x[i] | 0, this.y[i] | 0, c, ctx);
+              }
             }
           }
           // Bauten anlegen
           if (isSurface && sp.web && this.home[i] < 0 && rng.chance(0.004)) this._buildWeb(i, level, rng);
           if (isSurface && sp.funnel && this.home[i] < 0 && rng.chance(0.006)) this._buildFunnel(i, level, rng);
+          // Lauerjaeger ohne Bauwerk (Gottesanbeterin): stehen bleiben und warten
+          if (sp.ambush && rng.chance(0.02)) { this.state[i] = CSTATE.LURK; this.timer[i] = 900; }
           if (sp.web && this.home[i] >= 0) {
             // zurueck ins Netz
             const hx = this.home[i] % level.w, hy = (this.home[i] / level.w) | 0;
@@ -332,7 +383,13 @@ export class Creatures {
       }
 
       // --- Bewegung ---------------------------------------------------------
-      const speed = sp.speed * (0.65 + this.gSpeed[i] * 0.7) * 0.32 * speedScale;
+      /**
+       * Tagesrhythmus: tagaktive Arten werden nachts traege, nachtaktive
+       * tagsueber. Das verschiebt das Kraefteverhaeltnis im Lauf eines Tages,
+       * ohne dass irgendwo ein Zeitplan steht.
+       */
+      const activity = isSurface ? activityFor(sp, ctx.light !== undefined ? ctx.light : 1) : 1;
+      const speed = sp.speed * (0.65 + this.gSpeed[i] * 0.7) * 0.32 * speedScale * activity;
       if (speed > 0) this._move(level, i, speed, maxX, maxY, rng);
 
       // --- Portale (nur Arten, die ins Nest duerfen) -----------------------
@@ -384,14 +441,14 @@ export class Creatures {
    */
   _seek(i, level, ctx, sp) {
     const x = this.x[i] | 0, y = this.y[i] | 0;
-    if (sp.diet === 'plants') {
+    if (EATS_BY_SPECIES[this.species[i]].length > 0) {
+      const tbl = EATS_TABLE[this.species[i]];
       let bx = -1, by = -1, bestD = 1e9;
       const R = 14;
       for (let dy = -R; dy <= R; dy += 2) {
         for (let dx = -R; dx <= R; dx += 2) {
           const c = level.get(x + dx, y + dy);
-          if (c === SURFACE_CELL.FLOWER || c === SURFACE_CELL.FRUIT
-              || c === SURFACE_CELL.CARRION || c === SURFACE_CELL.APHIDS) {
+          if (c < tbl.length && tbl[c]) {
             const d = dx * dx + dy * dy;
             if (d < bestD) { bestD = d; bx = x + dx; by = y + dy; }
           }
@@ -401,13 +458,38 @@ export class Creatures {
       return;
     }
     /**
-     * Raeuber suchen NICHT das Nest auf. Das hat sich als Sackgasse erwiesen:
-     * alle Jaeger sammeln sich am Eingang und fressen das Volk auf, statt
-     * sich ueber die Karte zu verteilen. Stattdessen streifen sie umher und
-     * finden Beute dort, wo Ameisenstrassen verlaufen – das ergibt von
-     * selbst eine Verteilung entlang der Routen.
+     * Raeuber suchen ihre Beute NICHT gezielt – weder das Nest noch die
+     * Ameisenstrassen. Beides wurde ausprobiert und beides bricht das Spiel:
+     *
+     *   Nest ansteuern    -> alle Jaeger campen am Eingang, das Volk stirbt.
+     *   Spur ansteuern    -> alle Jaeger sammeln sich auf der Hauptstrasse.
+     *                        Auch als schwache Tendenz (Kurskorrektur 0.22 rad
+     *                        alle 32 Ticks) war das Volk im Test nach zehn
+     *                        Minuten ausgeloescht, und danach verhungerten
+     *                        saemtliche Jaeger mit.
+     *
+     * Der Grund ist strukturell: eine Ameisenstrasse ist ein DAUERHAFTER
+     * Beutestrom. Wer sie findet, muss nie wieder suchen. Deshalb bleibt es
+     * beim Umherstreifen – Jaeger finden Beute dort, wo viel Verkehr ist,
+     * einfach weil dort mehr Ameisen sind, und das ergibt von selbst eine
+     * Verteilung entlang der Routen, ohne Rueckkopplung.
      */
     void ctx;
+  }
+
+  /**
+   * Eine Nahrungszelle abweiden. Blattlaeuse und Aas werden ueber das
+   * Nahrungssystem abgebaut (damit der Restbestand stimmt), Pflanzen und
+   * Blueten verschwinden nur unter echten Blattfressern (sp.mows).
+   */
+  _graze(i, level, x, y, cell, ctx) {
+    if (cell === SURFACE_CELL.PLANT || cell === SURFACE_CELL.FLOWER) {
+      // Nur echte Blattfresser raeumen Gruen ab. Wer daran nur nascht
+      // (Marienkaefer an Pollen, Wespe an Nektar), laesst die Pflanze stehen.
+      if (SPECIES[this.species[i]].mows) level.set(x, y, SURFACE_CELL.DIRT);
+      return;
+    }
+    if (ctx.food) ctx.food.take(level, x, y, CREATURES.GRAZE_BITE);
   }
 
   _buildWeb(i, level, rng) {

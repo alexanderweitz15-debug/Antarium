@@ -13,7 +13,7 @@
  * Kolonie-ID gestaffelt.
  */
 
-import { NUTRITION, NUTRIENT, EVO, BROOD as BROOD_CFG } from '../config.js';
+import { NUTRITION, NUTRIENT, EVO, DAYNIGHT, BROOD as BROOD_CFG } from '../config.js';
 import { CASTE, casteDef } from './castes.js';
 import { NEST_CELL, CHAMBER } from './nest.js';
 
@@ -102,6 +102,21 @@ export function demandPerTick(colony, world, out) {
     + (colony.population[CASTE.TITAN] || 0) * 2.5;
   protein += expensive * NUTRITION.PROTEIN_PER_LARVA * 0.06;
 
+  /**
+   * Nachts wird oberirdisch langsamer gesammelt (siehe sim/ants.js) – dann
+   * muss auch der Grundumsatz sinken, sonst waere die Nacht nichts als eine
+   * dauerhafte Ertragsminderung. Im Test hat genau das ein Volk, das sonst
+   * 25 Minuten stabil lief, nach elf Minuten verhungern lassen.
+   *
+   * So bleibt die Tragfaehigkeit ueber den Tag gemittelt gleich; was sich
+   * aendert, ist der RHYTHMUS: nachts ruhen die Strassen und die
+   * nachtaktiven Jaeger haben das Feld.
+   */
+  const light = world && world.light !== undefined ? world.light : 1;
+  const rest = 1 - (1 - DAYNIGHT.ANT_NIGHT_SPEED) * (1 - light)
+    / (1 - DAYNIGHT.NIGHT_LIGHT);
+  sugar *= rest;
+
   out[0] = Math.max(1e-6, sugar);
   out[1] = Math.max(1e-6, protein);
   out[2] = Math.max(1e-6, fat);
@@ -130,8 +145,24 @@ export function updateNutrition(colony, world, ticks) {
     if (n === NUTRIENT.PROTEIN) continue;          // Protein geht ueber die Brutpflege ab
     const need = _demand[n] * ticks;
     colony.demandAcc[n] += need;
-    const take = Math.min(colony.storeArr[n], need);
+    let take = Math.min(colony.storeArr[n], need);
     colony.storeArr[n] -= take;
+    /**
+     * FETT IST DIE RESERVE. Ohne diesen Schritt haeuft eine Kolonie
+     * hunderte Einheiten Fett an und verhungert trotzdem, sobald der
+     * Zucker alle ist: der Deckungsgrad faellt auf 0 und das ganze Volk
+     * stirbt innerhalb einer halben Minute. Genau dafuer ist Fett da –
+     * es wird mit Verlust in Energie umgesetzt.
+     */
+    if (n === NUTRIENT.SUGAR && take < need) {
+      const missing = need - take;
+      const fat = colony.storeArr[NUTRIENT.FAT];
+      const burn = Math.min(fat, missing / NUTRITION.FAT_TO_SUGAR);
+      if (burn > 0) {
+        colony.storeArr[NUTRIENT.FAT] = fat - burn;
+        take += burn * NUTRITION.FAT_TO_SUGAR;
+      }
+    }
     if (need > 1e-9) supply = Math.min(supply, take / need);
   }
   colony.demandAcc[NUTRIENT.PROTEIN] += _demand[NUTRIENT.PROTEIN] * ticks;

@@ -28,9 +28,10 @@ export class Legend {
    * @param {HTMLInputElement} visibleOnlyEl
    * @param {import('../render/sprites.js').SpriteBank} sprites
    */
-  constructor(el, visibleOnlyEl, sprites) {
+  constructor(el, visibleOnlyEl, sprites, game) {
     this.el = el;
     this.sprites = sprites;
+    this.game = game || null;
     this.visibleOnly = visibleOnlyEl;
     this.signature = '';
     if (this.visibleOnly) this.visibleOnly.addEventListener('change', () => { this.signature = ''; });
@@ -80,6 +81,7 @@ export class Legend {
         swatch: this._cellSwatch(level, d.id, 0),
         name: d.name,
         desc: d.desc,
+        cellId: d.id,
       }))));
     }
 
@@ -92,6 +94,8 @@ export class Legend {
           swatch: this._cellSwatch(level, NEST_CELL.CHAMBER, c.id),
           name: c.name,
           desc: c.desc,
+          cellId: NEST_CELL.CHAMBER,
+          meta: c.id,
         }))));
       }
     }
@@ -155,6 +159,16 @@ export class Legend {
     for (const it of items) {
       const row = document.createElement('div');
       row.className = 'legend-item';
+      /**
+       * Zeigt der Eintrag einen Zelltyp, hebt das Ueberfahren alle
+       * sichtbaren Zellen dieses Typs hervor. Damit beantwortet die Legende
+       * die Frage "wo ist das eigentlich?" direkt auf der Karte.
+       */
+      if (it.cellId !== undefined && this.game && this.game.highlightCell) {
+        row.classList.add('legend-hoverable');
+        row.addEventListener('mouseenter', () => this.game.highlightCell(it.cellId, it.meta));
+        row.addEventListener('mouseleave', () => this.game.highlightCell(-1));
+      }
       const sw = document.createElement(it.img || it.swatch ? 'img' : 'div');
       sw.className = 'legend-swatch';
       if (it.img || it.swatch) sw.src = it.img || it.swatch;

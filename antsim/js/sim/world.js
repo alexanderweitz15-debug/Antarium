@@ -18,12 +18,17 @@
 
 import {
   COLONY, TOOLS, DIG, LIMITS, NUTRITION, EVO, CREATURES, LIFE, BROOD as BROOD_CFG,
-  WORLD as W, mapPreset, GEN,
+  WORLD as W, mapPreset, GEN, COMBAT, FORTIFY, GODMODE, FOOD, DAYNIGHT,
 } from '../config.js';
 import { RNG } from '../rng.js';
-import { LevelManager, LEVEL_KIND } from './levels.js';
-import { createSurface, findNestSite, buildEntrance, dumpSoil, SURFACE_CELL } from './surface.js';
-import { createNest, buildStartNest, randomAirCell, NEST_CELL, CHAMBER } from './nest.js';
+import { LevelManager, Level, LEVEL_KIND } from './levels.js';
+import {
+  createSurface, findNestSite, buildEntrance, dumpSoil,
+  SURFACE_CELL, SURFACE_CELL_DEFS,
+} from './surface.js';
+import {
+  createNest, buildStartNest, randomAirCell, NEST_CELL, NEST_CELL_DEFS, CHAMBER,
+} from './nest.js';
 import { PortalSystem } from './portals.js';
 import { ColonyManager, updateColonyAI } from './colony.js';
 import { Ants, ANT_STATE, CARRY } from './ants.js';
@@ -34,9 +39,17 @@ import { FoodSystem } from './food.js';
 import { PheromoneSystem } from './pheromones.js';
 import { BroodPool, broodSpot, STAGE } from './brood.js';
 import { Creatures, SPECIES_LIST, SPECIES_BY_KEY } from './creatures.js';
+import { Stability } from './stability.js';
+import { Combat } from './combat.js';
+import { INTERVENTION_BY_KEY, updateInterventions } from './interventions.js';
 import { initNutrition, updateNutrition } from './nutrition.js';
+import { saveWorld, loadWorld } from './save.js';
 import { newGenome, mutateGenome, geneSummary, copyGenome } from './genome.js';
+import { timeOfDay, lightAt, phaseAt } from './daynight.js';
 import { bus, CAT } from './events.js';
+
+/** Hoechstzahl Anzeige-Effekte je Tick. */
+const W_FX_MAX = 96;
 
 export class World {
   constructor(seed, presetKey = 'wiese') {
@@ -57,6 +70,8 @@ export class World {
     this.brood = new BroodPool();
     this.creatures = new Creatures();
     this.construction = new Construction(this);
+    this.stability = new Stability(this);
+    this.combat = new Combat(this);
     this.food = new FoodSystem(this);
     /** @type {PheromoneSystem|null} – nur fuer die Oberflaeche */
     this.phero = null;
@@ -72,7 +87,7 @@ export class World {
 
     this.perf = {
       total: 0, buckets: 0, spatial: 0, ants: 0, build: 0, fields: 0,
-      brood: 0, colony: 0, creatures: 0, phero: 0,
+      brood: 0, colony: 0, creatures: 0, phero: 0, combat: 0, stability: 0,
       levels: new Map(),
     };
 
@@ -80,9 +95,33 @@ export class World {
       world: this,
       portals: this.portals, levels: this.levels, colonies: this.colonies,
       construction: this.construction, fields: this.fields,
+      stability: this.stability, combat: this.combat,
       food: this.food, brood: this.brood, ants: this.ants, creatures: this.creatures,
-      phero: null, rng: this.rngSim, tick: 0,
+      phero: null, rng: this.rngSim, tick: 0, light: 1,
     };
+    /** Kampfalarme fuer die UI (Ringpuffer). */
+    this.alerts = [];
+    /** Wetterlage (Duerre/Regen in Restticks). */
+    this.weather = { drought: 0, rain: 0 };
+    /** Staerke des Bildschirmwackelns (0..1.5), klingt von selbst ab. */
+    this.shake = 0;
+    /** Goettliche Energie im Herausforderungsmodus. */
+    this.godMode = GODMODE.DEFAULT_MODE;
+    this.energy = GODMODE.ENERGY_MAX;
+    /** Tageszeit 0..1 und Helligkeit 0..1 (nur die Oberflaeche betrifft es). */
+    this.timeOfDay = 0.25;
+    this.light = 1;
+    this.dayPhase = 2;
+    /** Tag-Nacht-Zyklus abschaltbar (Einstellungen). */
+    this.dayNightOn = DAYNIGHT.ENABLED;
+    /**
+     * Anzeige-Effekte des laufenden Ticks (Teilchen). Reine Kosmetik: die
+     * Simulation schreibt hier nur hinein, gelesen wird vom Renderer. In
+     * einem headless-Lauf bleibt der Puffer einfach voll und kostet nichts.
+     */
+    this.fx = { kind: new Uint8Array(W_FX_MAX), level: new Int16Array(W_FX_MAX),
+      x: new Int16Array(W_FX_MAX), y: new Int16Array(W_FX_MAX),
+      n: new Uint8Array(W_FX_MAX), count: 0 };
     this._budget = { left: DIG.FIELD_BUDGET_PER_TICK };
     this._census = new Uint16Array(SPECIES_LIST.length);
   }
@@ -129,8 +168,17 @@ export class World {
       colony.pheno.size = 1 + (opts.maternal.size - 1) * EVO.MATERNAL_PHENO;
       colony.pheno.speed = 1 + (opts.maternal.speed - 1) * EVO.MATERNAL_PHENO;
       colony.pheno.life = 1 + (opts.maternal.life - 1) * EVO.MATERNAL_PHENO;
-      colony.storeArr[0] += 60;
-      colony.storeArr[1] += 40;
+      /**
+       * Mitgift der Jungkoenigin. Sie war mit 60/40 zu knapp: eine Larve
+       * braucht 7.5 Protein, und ein Dutzend Arbeiterinnen bringt in den
+       * ersten Minuten kaum etwas heim. Die Toechter blieben deshalb
+       * dauerhaft bei zehn bis zwanzig Tieren stehen. Mit einer Mitgift fuer
+       * rund ein Dutzend Larven kommt die erste Generation durch – danach
+       * muss die Kolonie allein zurechtkommen.
+       */
+      colony.storeArr[0] += EVO.DOWRY[0];
+      colony.storeArr[1] += EVO.DOWRY[1];
+      colony.storeArr[2] += EVO.DOWRY[2];
     }
 
     let site = at;
@@ -193,6 +241,7 @@ export class World {
         levelId: nest.id, x: layout.queen.x + 0.5, y: layout.queen.y + 0.5,
         colonyId: colony.id, casteId: CASTE.QUEEN, dir: rng.angle(), state: ANT_STATE.IDLE,
         lifespan: LIFE.QUEEN_LIFESPAN,
+        hungerTol: rng.float(),
       });
       colony.queenAnt = q;
     }
@@ -206,7 +255,7 @@ export class World {
         this.ants.spawn({
           levelId: nest.id, x: spot.x + 0.5, y: spot.y + 0.5, colonyId: colony.id,
           casteId: caste, dir: rng.angle(), state: ANT_STATE.EXPLORE,
-          timer: rng.intRange(30, 400), lifespan: life,
+          timer: rng.intRange(30, 400), lifespan: life, hungerTol: rng.float(),
         });
       } else {
         const p = this.portals.ofColony(colony.id)[0];
@@ -215,7 +264,7 @@ export class World {
         this.ants.spawn({
           levelId: surface.id, x: spot.x + 0.5, y: spot.y + 0.5, colonyId: colony.id,
           casteId: caste, dir: rng.angle(), state: ANT_STATE.EXPLORE,
-          timer: rng.intRange(30, 900), lifespan: life,
+          timer: rng.intRange(30, 900), lifespan: life, hungerTol: rng.float(),
         });
       }
     }
@@ -321,6 +370,22 @@ export class World {
     });
   }
 
+  /**
+   * Kampfalarm fuer die UI. Der Eintrag traegt Ebene und Ort, damit der
+   * Knopf "Zum Kampf" direkt dorthin springen kann.
+   */
+  raiseAlarm(colony, threat, levelId, x, y) {
+    if (!colony) return;
+    const last = this.alerts[this.alerts.length - 1];
+    if (last && last.colonyId === colony.id && last.threat === threat
+        && this.tick - last.tick < 300) return;
+    this.alerts.push({
+      tick: this.tick, colonyId: colony.id, threat,
+      levelId, x, y, name: colony.name, color: colony.color,
+    });
+    if (this.alerts.length > 12) this.alerts.shift();
+  }
+
   /** Erste Ameise einer evolutionaeren Kaste in der Welt. */
   firstCaste(def, colony) {
     if (this.seenCastes.has(def.id)) return;
@@ -416,7 +481,7 @@ export class World {
       const id = this.ants.spawn({
         levelId: surface.id, x: x + 0.5, y: y + 0.5, colonyId: colony.id,
         casteId: CASTE.ALATE, dir: rng.angle(), state: ANT_STATE.EXPLORE,
-        timer: 65000, lifespan: 2400,
+        timer: 65000, lifespan: 2400, hungerTol: rng.float(),
       });
       if (id >= 0) this.ants.trip[id] = 0;
     }
@@ -507,6 +572,7 @@ export class World {
         casteId, dir: rng.angle(), state: ANT_STATE.EXPLORE,
         timer: rng.intRange(60, 600),
         lifespan: Math.round(LIFE.WORKER_LIFESPAN * rng.range(0.7, 1.3)),
+        hungerTol: rng.float(),
       });
       if (id >= 0) made++;
     }
@@ -540,6 +606,101 @@ export class World {
       if (id >= 0) made++;
     }
     return made;
+  }
+
+  /**
+   * Werkzeug "Brut absetzen": legt Eier, Larven oder Puppen der gewaehlten
+   * Kolonie in einer Nest-Ebene ab. Die Brut verhaelt sich danach wie jede
+   * andere – sie muss gefuettert werden und kann verhungern.
+   * @param {number} stage 0 = Ei, 1 = Larve, 2 = Puppe
+   */
+  spawnBroodAt(colonyId, level, cx, cy, n, stage = 0, casteId = CASTE.WORKER) {
+    const colony = this.colonies.get(colonyId);
+    if (!colony || level.kind !== LEVEL_KIND.NEST) return 0;
+    const rng = this.rngSim;
+    let made = 0;
+    for (let k = 0; k < n; k++) {
+      let px = -1, py = -1;
+      for (let t = 0; t < 30; t++) {
+        const x = Math.round(cx + rng.range(-3.5, 3.5));
+        const y = Math.round(cy + rng.range(-3.5, 3.5));
+        if (!level.inBounds(x, y) || level.isSolid(x, y)) continue;
+        px = x; py = y; break;
+      }
+      if (px < 0) continue;
+      const id = this.brood.spawn({
+        colonyId: colony.id, levelId: level.id, x: px + 0.5, y: py + 0.5,
+        target: casteId,
+        pSize: colony.pheno.size, pSpeed: colony.pheno.speed, pLife: colony.pheno.life,
+      });
+      if (id < 0) continue;
+      // Weiter entwickelte Brut direkt in das gewuenschte Stadium setzen
+      for (let st = 0; st < stage; st++) {
+        this.brood.stage[id] = st + 1;
+        this.brood.progress[id] = 0;
+        if (st + 1 === STAGE.PUPA) this.brood.fed[id] = BROOD_CFG.LARVA_PROTEIN;
+      }
+      made++;
+    }
+    if (made > 0) {
+      bus.logEvent(CAT.SYS, made + ' Brut abgesetzt (' + colony.name + ')',
+        { tick: this.tick, levelId: level.id, x: cx, y: cy, colonyId: colony.id });
+    }
+    return made;
+  }
+
+  /**
+   * Werkzeug "Vorrat auffuellen": schiebt Naehrstoffe direkt in das Lager
+   * einer Kolonie. Praktisch, um gezielt eine Mangellage zu erzeugen oder
+   * aufzuheben, ohne Nahrung auf der Karte zu verteilen.
+   * @param {number[]} add [Zucker, Protein, Fett]
+   */
+  stockColony(colonyId, add) {
+    const colony = this.colonies.get(colonyId);
+    if (!colony) return false;
+    for (let i = 0; i < 3; i++) {
+      colony.storeArr[i] = Math.max(0, Math.min(colony.capacity[i], colony.storeArr[i] + add[i]));
+    }
+    return true;
+  }
+
+  /**
+   * Werkzeug "Entfernen": loescht Ameisen, Brut und Kreaturen im Umkreis.
+   * Gegenstueck zu den Spawn-Werkzeugen – ohne das kann man einen
+   * verunglueckten Versuchsaufbau nicht mehr aufraeumen.
+   */
+  removeUnitsAt(level, cx, cy, radius) {
+    const r = Math.max(1, radius);
+    const r2 = r * r;
+    let n = 0;
+    const ants = this.ants;
+    for (let i = 0; i < ants.high; i++) {
+      if (!ants.alive[i] || ants.level[i] !== level.id) continue;
+      const dx = ants.x[i] - cx, dy = ants.y[i] - cy;
+      if (dx * dx + dy * dy > r2) continue;
+      if (ants.caste[i] === CASTE.QUEEN) {
+        const colony = this.colonies.get(ants.colony[i]);
+        if (colony) this.queenDied(colony, level, ants.x[i], ants.y[i]);
+      }
+      ants.kill(i);
+      n++;
+    }
+    for (let i = 0; i < this.brood.high; i++) {
+      if (!this.brood.alive[i] || this.brood.level[i] !== level.id) continue;
+      const dx = this.brood.x[i] - cx, dy = this.brood.y[i] - cy;
+      if (dx * dx + dy * dy > r2) continue;
+      this.brood.kill(i);
+      n++;
+    }
+    const cr = this.creatures;
+    for (let i = 0; i < cr.high; i++) {
+      if (!cr.alive[i] || cr.level[i] !== level.id) continue;
+      const dx = cr.x[i] - cx, dy = cr.y[i] - cy;
+      if (dx * dx + dy * dy > r2) continue;
+      cr.kill(i);
+      n++;
+    }
+    return n;
   }
 
   /** Werkzeug "Nahrung ablegen". */
@@ -599,6 +760,93 @@ export class World {
     return n;
   }
 
+  /**
+   * Goettlicher Eingriff ausfuehren.
+   * @param {string} key Schluessel aus INTERVENTIONS
+   * @param {object} level Zielebene
+   * @param {{power?:number, radius?:number, colonyId?:number, chamberType?:number}} opts
+   * @returns {{ok:boolean, result?:number, reason?:string}}
+   */
+  applyIntervention(key, level, x, y, opts = {}) {
+    const iv = INTERVENTION_BY_KEY.get(key);
+    if (!iv) return { ok: false, reason: 'unbekannt' };
+    if (this.godMode === 'challenge' && this.energy < iv.cost) {
+      return { ok: false, reason: 'Nicht genug goettliche Energie (' + iv.cost + ' noetig)' };
+    }
+    const o = {
+      power: opts.power !== undefined ? opts.power : GODMODE.DEFAULT_POWER,
+      radius: opts.radius !== undefined ? opts.radius : GODMODE.DEFAULT_RADIUS,
+      colonyId: opts.colonyId !== undefined ? opts.colonyId : 0,
+      chamberType: opts.chamberType || 0,
+    };
+    const result = iv.apply(this, level, x | 0, y | 0, o);
+    if (iv.fx !== undefined) this.emitFx(iv.fx, level.id, x | 0, y | 0, iv.fxCount || 12);
+    if (this.godMode === 'challenge') this.energy = Math.max(0, this.energy - iv.cost);
+    return { ok: true, result };
+  }
+
+  /**
+   * Anzeige-Effekt anmelden (Teilchen). Wirkt NICHT auf die Simulation.
+   * @param {number} kind Index aus render/particles.js PKIND
+   */
+  emitFx(kind, levelId, x, y, n = 4) {
+    const f = this.fx;
+    if (f.count >= W_FX_MAX) return;
+    const i = f.count++;
+    f.kind[i] = kind; f.level[i] = levelId;
+    f.x[i] = x; f.y[i] = y; f.n[i] = n;
+  }
+
+  // =========================================================================
+  // Speichern und Laden
+  // =========================================================================
+
+  /** Vollstaendiger Weltzustand als JSON-taugliches Objekt. */
+  toSave() { return saveWorld(this); }
+
+  /**
+   * Speicherstand in DIESE Welt laden. Die Welt muss frisch erzeugt sein
+   * (gleicher Seed und Preset wie im Stand), damit Zelltabellen und
+   * Systemobjekte passen; danach wird jeder Zustand ueberschrieben.
+   */
+  applySave(data) {
+    return loadWorld(this, data, {
+      createLevel: (ld) => {
+        const lvl = new Level({
+          kind: ld.kind, w: ld.w, h: ld.h, name: ld.name, colonyId: ld.colonyId,
+        });
+        lvl.setCellDefs(ld.kind === LEVEL_KIND.SURFACE ? SURFACE_CELL_DEFS : NEST_CELL_DEFS);
+        return lvl;
+      },
+      FieldSet,
+      initNutrition,
+      Construction,
+    });
+  }
+
+  /**
+   * Neue Welt aus einem Speicherstand. Erzeugt eine Welt mit dem
+   * gespeicherten Seed und Preset und ueberschreibt sie dann.
+   * @returns {{ok:boolean, world?:World, reason?:string}}
+   */
+  static fromSave(data) {
+    if (!data || data.format !== 'formicarium-save') {
+      return { ok: false, reason: 'Keine Formicarium-Speicherdatei' };
+    }
+    const w = new World(data.seed, data.preset);
+    // Die Oberflaeche wird gebraucht, damit Pheromonsystem und Nahrung
+    // ihre Puffer in der richtigen Groesse anlegen.
+    const surface = w.levels.add(createSurface(w.rngGen, w.genSurface));
+    w.ants.registerLevel(surface.id);
+    w.creatures.registerLevel(surface.id);
+    w.food.generate(surface, w.rngGen);
+    w.phero = new PheromoneSystem(surface);
+    w.ctx.phero = w.phero;
+    const res = w.applySave(data);
+    if (!res.ok) return res;
+    return { ok: true, world: w };
+  }
+
   /** Forschungsmenue: Hochzeitsflug sofort ausloesen. */
   forceFlight(colonyId) {
     const c = this.colonies.get(colonyId);
@@ -622,6 +870,18 @@ export class World {
     const t0 = now();
     this.tick++;
     this.ctx.tick = this.tick;
+
+    // --- Tageszeit ----------------------------------------------------------
+    if (this.dayNightOn) {
+      this.timeOfDay = timeOfDay(this.tick);
+      this.light = lightAt(this.timeOfDay);
+      this.dayPhase = phaseAt(this.timeOfDay);
+    } else {
+      this.timeOfDay = 0.25; this.light = 1; this.dayPhase = 2;
+    }
+    this.ctx.light = this.light;
+
+    this.fx.count = 0;
     this.portals.beginTick();
 
     const t1 = now();
@@ -643,6 +903,19 @@ export class World {
         updateNutrition(colony, this, iv);
         updateColonyAI(colony, this, iv);
       }
+      // Bedrohungslage und Reaktion darauf
+      if ((this.tick + colony.id * 5) % COMBAT.THREAT_INTERVAL === 0) {
+        this.combat.updateThreat(colony, this.ctx);
+        this.combat.applyThreat(colony, this.ctx);
+        this.combat.considerRaid(colony, this.ctx);
+      }
+      // Befestigungen planen
+      if ((this.tick + colony.id * 11) % FORTIFY.PLAN_INTERVAL === 0) {
+        for (const lid of colony.nestLevelIds) {
+          const nest = this.levels.get(lid);
+          if (nest) this.construction.planDefence(colony, nest, this.portals, this.rngSim);
+        }
+      }
       for (const lid of colony.nestLevelIds) {
         const nest = this.levels.get(lid);
         if (nest) this.construction.update(colony, nest, this.rngSim, this.tick);
@@ -662,7 +935,7 @@ export class World {
     const t5 = now();
 
     // --- Einheiten je Ebene -------------------------------------------------
-    let spatialMs = 0, antsMs = 0, creatureMs = 0;
+    let spatialMs = 0, antsMs = 0, creatureMs = 0, combatMs = 0;
     for (const level of this.levels.levels) {
       const l0 = now();
       this.ants.fillSpatial(level);
@@ -671,17 +944,33 @@ export class World {
       const l2 = now();
       this.creatures.update(level, this.ctx);
       const l3 = now();
+      this.combat.update(level, this.ctx);
+      const l4 = now();
       spatialMs += l1 - l0;
       antsMs += l2 - l1;
       creatureMs += l3 - l2;
-      level.simMs = l3 - l0;
+      combatMs += l4 - l3;
+      level.simMs = l4 - l0;
       this.perf.levels.set(level.id, level.simMs);
     }
     const t6 = now();
+    this.stability.update(this.ctx);
+    const t6b = now();
 
     // --- Umwelt -------------------------------------------------------------
     if (this.phero) this.phero.update(this.tick);
-    this.food.update(this.levels.surface, this.tick);
+    // Wetter beeinflusst das Nachwachsen: Duerre stoppt es, Regen verdoppelt
+    const weatherFactor = this.weather.drought > 0 ? 0 : (this.weather.rain > 0 ? 2 : 1);
+    this.food.update(this.levels.surface, this.tick, FOOD.REGROW_SCALE * weatherFactor);
+    // Pflanzen wachsen nur bei Licht – nachts steht die Produktion still.
+    // Pflanzen wachsen mit dem Licht: nachts langsam, tagsueber voll.
+    // (Ganz abschalten war zu hart – das Oekosystem kippte im Test.)
+    this.food.regrowVegetation(this.levels.surface, this.rngSim, this.tick, this.light);
+    updateInterventions(this);
+    if (this.godMode === 'challenge' && this.energy < GODMODE.ENERGY_MAX) {
+      this.energy = Math.min(GODMODE.ENERGY_MAX,
+        this.energy + GODMODE.ENERGY_REGEN / 30);
+    }
     if (this.tick % 120 === 0) this.updateAlates();
     const t7 = now();
 
@@ -692,6 +981,8 @@ export class World {
     this.perf.spatial = spatialMs;
     this.perf.ants = antsMs;
     this.perf.creatures = creatureMs;
+    this.perf.combat = combatMs;
+    this.perf.stability = t6b - t6;
     this.perf.build = (t4 - t3) + (t5 - t4);
     this.perf.phero = t7 - t6;
     this.perf.total = now() - t0;

@@ -124,6 +124,28 @@ export class Inspector {
     return parts.join('<br>');
   }
 
+  /** Kreatur auswaehlen und im Detailfenster zeigen. */
+  selectCreature(idx) {
+    this.selected = -1;
+    this.mode = 'creature';
+    const cr = this.world.creatures;
+    const sp = SPECIES_LIST[cr.species[idx]];
+    this.body.innerHTML = '<div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">'
+      + '<img src="' + this.sprites.dataURL('creature_' + sp.key, 0) + '" style="width:32px;height:32px;'
+      + 'image-rendering:pixelated;background:#10161a;border:1px solid #2b3439;border-radius:3px">'
+      + '<div><b>' + sp.name + '</b><br><span style="color:#8b9a95">' + sp.desc + '</span></div></div>'
+      + '<table style="width:100%">'
+      + tr('Zustand', CSTATE_LABEL[cr.state[idx]] || '?')
+      + tr('HP', cr.hp[idx].toFixed(1) + ' / ' + cr.hpMax[idx].toFixed(1))
+      + tr('Energie', cr.energy[idx].toFixed(0) + ' / ' + sp.energy)
+      + tr('Generation', String(cr.generation[idx]))
+      + tr('Gene', 'Groesse ' + cr.gSize[idx].toFixed(2) + ' \u00b7 Tempo '
+        + cr.gSpeed[idx].toFixed(2) + ' \u00b7 Aggression ' + cr.gAggr[idx].toFixed(2))
+      + tr('Alter', (cr.age[idx] / 30).toFixed(0) + ' / ' + (cr.maxAge[idx] / 30).toFixed(0) + ' s')
+      + '</table>';
+    this.panel.hidden = false;
+  }
+
   select(antIndex) {
     this.selected = antIndex;
     this.mode = 'ant';
@@ -201,4 +223,8 @@ export class Inspector {
       + extra + '</table>';
     this.panel.hidden = false;
   }
+}
+
+function tr(k, v) {
+  return '<tr><td style="color:#8b9a95;padding-right:6px">' + k + '</td><td>' + v + '</td></tr>';
 }

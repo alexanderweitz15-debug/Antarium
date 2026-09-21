@@ -22,16 +22,22 @@ function xmur3(str) {
   };
 }
 
-/** sfc32 – schneller, gut verteilter 32-Bit-Generator. */
-function sfc32(a, b, c, d) {
+/**
+ * sfc32 – schneller, gut verteilter 32-Bit-Generator.
+ *
+ * Der Zustand liegt in einem Int32Array statt in Closure-Variablen, damit er
+ * fuer Speicherstaende auslesbar und wieder setzbar ist (siehe sim/save.js).
+ */
+function sfc32(state) {
   return function rand() {
-    a |= 0; b |= 0; c |= 0; d |= 0;
+    let a = state[0] | 0, b = state[1] | 0, c = state[2] | 0, d = state[3] | 0;
     const t = (((a + b) | 0) + d) | 0;
     d = (d + 1) | 0;
     a = b ^ (b >>> 9);
     b = (c + (c << 3)) | 0;
     c = (c << 21) | (c >>> 11);
     c = (c + t) | 0;
+    state[0] = a; state[1] = b; state[2] = c; state[3] = d;
     return (t >>> 0) / 4294967296;
   };
 }
@@ -41,10 +47,28 @@ export class RNG {
   constructor(seed) {
     this.seed = String(seed);
     const h = xmur3(this.seed);
-    this._next = sfc32(h(), h(), h(), h());
+    this._state = new Int32Array([h(), h(), h(), h()]);
+    this._next = sfc32(this._state);
     this._gaussSpare = NaN;
     // Kurzes Aufwaermen: die ersten Werte von sfc32 korrelieren leicht.
     for (let i = 0; i < 12; i++) this._next();
+  }
+
+  /**
+   * Zustand als vier Zahlen plus Gauss-Reserve – fuer Speicherstaende.
+   * Nach setState liefert der Strom exakt die gleiche Folge weiter.
+   */
+  getState() {
+    return [this._state[0], this._state[1], this._state[2], this._state[3],
+      Number.isNaN(this._gaussSpare) ? null : this._gaussSpare];
+  }
+
+  setState(st) {
+    if (!st || st.length < 4) return false;
+    this._state[0] = st[0]; this._state[1] = st[1];
+    this._state[2] = st[2]; this._state[3] = st[3];
+    this._gaussSpare = (st[4] === null || st[4] === undefined) ? NaN : st[4];
+    return true;
   }
 
   /** Neuer, unabhaengiger Strom mit stabilem Namen. */

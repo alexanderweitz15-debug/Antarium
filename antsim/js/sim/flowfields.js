@@ -132,6 +132,7 @@ export class FieldSet {
     this.dig = new FlowField(level);
     this.store = new FlowField(level);
     this.brood = new FlowField(level);
+    this.escape = new FlowField(level);
     this._goals = [];
   }
 
@@ -140,6 +141,7 @@ export class FieldSet {
     this.dig.valid = false; this.dig.airVersion = -1;
     this.store.valid = false; this.store.airVersion = -1;
     this.brood.valid = false; this.brood.airVersion = -1;
+    this.escape.valid = false; this.escape.airVersion = -1;
   }
 
   markEntranceDirty() { this.entrance.valid = false; this.entrance.airVersion = -1; }
@@ -186,7 +188,39 @@ export class FieldSet {
       this.brood.airVersion = av;
       budget.left--;
     }
+
+    if (budget.left > 0 && (this.escape.airVersion !== av || !this.escape.valid)) {
+      this.escape.compute(level, escapeGoals(level, this._goals));
+      this.escape.airVersion = av;
+      budget.left--;
+    }
   }
+}
+
+/**
+ * Ziel der Evakuierung: die Fluchtkammer, sonst die tiefste Kammer der
+ * Ebene – dorthin bringen Ammen die Brut und die Koenigin zieht sich zurueck.
+ */
+function escapeGoals(level, out) {
+  out.length = 0;
+  const cells = level.cells, meta = level.meta;
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i] === NEST_CELL.CHAMBER && meta[i] === CHAMBER.ESCAPE) out.push(i);
+  }
+  if (out.length) return out;
+  // Keine Fluchtkammer: tiefste vorhandene Kammer nehmen
+  let deepest = -1;
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i] === NEST_CELL.CHAMBER) deepest = i;
+  }
+  if (deepest >= 0) {
+    const dy = (deepest / level.w) | 0;
+    for (let x = 0; x < level.w; x++) {
+      const i = dy * level.w + x;
+      if (cells[i] === NEST_CELL.CHAMBER) out.push(i);
+    }
+  }
+  return out;
 }
 
 /**

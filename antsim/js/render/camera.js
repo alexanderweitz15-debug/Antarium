@@ -7,7 +7,7 @@
  * verlassen hat.
  */
 
-import { CAMERA, WORLD } from '../config.js';
+import { CAMERA, WORLD, CINEMA } from '../config.js';
 
 export class Camera {
   constructor() {
@@ -77,6 +77,19 @@ export class Camera {
     this.x = (cx + 0.5) * WORLD.CELL_SIZE;
     this.y = (cy + 0.5) * WORLD.CELL_SIZE;
     if (zoom !== undefined) this.zoom = zoom;
+    this.clamp();
+  }
+
+  /**
+   * Weich auf einen Weltpunkt nachziehen (Frontverfolgung). Springt nicht,
+   * sondern holt je Sekunde einen festen Anteil der Reststrecke auf – so
+   * bleibt die Front im Bild, ohne dass die Kamera zuckt.
+   * @param {number} dtMs vergangene Zeit in Millisekunden
+   */
+  glideTo(wx, wy, dtMs) {
+    const k = 1 - Math.exp(-CINEMA.FRONT_GLIDE * (dtMs / 1000));
+    this.x += (wx - this.x) * k;
+    this.y += (wy - this.y) * k;
     this.clamp();
   }
 

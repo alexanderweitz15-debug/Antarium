@@ -15,13 +15,20 @@
  * (Phase 2) und Aufgabenwahl (Phase 3) es ersetzen werden.
  */
 
-import { ANTS, LIMITS, PORTALS, DIG, PHERO, FOOD, NUTRITION, LIFE, NUTRIENT } from '../config.js';
+import {
+  ANTS, LIMITS, PORTALS, DIG, PHERO, FOOD, NUTRITION, LIFE, NUTRIENT,
+  FORTIFY, STABILITY, DAYNIGHT, GODMODE,
+} from '../config.js';
 import { LEVEL_KIND } from './levels.js';
 import { CASTE, casteDef } from './castes.js';
 import { dumpSoil, FOOD_OF_CELL, SURFACE_CELL } from './surface.js';
 import { isFoodCell, dominantNutrient } from './food.js';
 import { storeFood } from './nutrition.js';
 import { PH } from './pheromones.js';
+import { NEST_CELL } from './nest.js';
+
+/** Wasserzelle je Ebenenart (0 = Oberflaeche, 1 = Nest). */
+const WATER_CELL = [SURFACE_CELL.WATER, NEST_CELL.WATER];
 
 
 /** Zustandsmaschine. Phase 1 nutzt IDLE/EXPLORE/RETURN/TRANSIT. */
@@ -44,6 +51,8 @@ export const ANT_STATE = {
   EVACUATE: 15,
   CARRY_WOUNDED: 16,
   PLUG: 17,
+  RAID: 18,        // unterwegs zu einem fremden Nest
+  LOOT: 19,        // mit Beute auf dem Heimweg
 };
 
 export const ANT_STATE_LABEL = {
@@ -51,6 +60,7 @@ export const ANT_STATE_LABEL = {
   5: 'Graebt', 6: 'Baut', 7: 'Repariert', 8: 'Pflegt Brut', 9: 'Melkt Blattlaeuse',
   10: 'Haelt Wache', 11: 'Patrouilliert', 12: 'Greift an', 13: 'Verteidigt',
   14: 'Flieht', 15: 'Evakuiert Brut', 16: 'Traegt Verwundete', 17: 'Blockiert Eingang',
+  18: 'Raubzug', 19: 'Traegt Beute heim',
 };
 
 /** Was eine Ameise tragen kann. */
@@ -104,6 +114,13 @@ export class Ants {
     this.hp = new Float32Array(capacity);
     this.hpMax = new Float32Array(capacity);
     this.hunger = new Float32Array(capacity);
+    /**
+     * Individuelle Hungertoleranz. Ohne sie steigt der Hunger bei allen
+     * Ameisen einer Kolonie exakt gleich schnell – und ein Volk, das in
+     * Unterdeckung geraet, stirbt nicht allmaehlich, sondern innerhalb
+     * weniger Sekunden komplett. Mit Streuung schrumpft es stattdessen.
+     */
+    this.hungerTol = new Float32Array(capacity);
     this.age = new Uint32Array(capacity);
 
     // --- Tragelast (Typ, Naehrstoff, Menge) – ab Phase 2/3 ----------------
@@ -141,6 +158,10 @@ export class Ants {
     this.lifespan = new Uint32Array(capacity);
     /** Ticks, die die Ameise in einem Netz festhaengt. */
     this.stuck = new Uint8Array(capacity);
+    /** Kolonie, gegen die sich ein Raubzug richtet (-1 = keiner). */
+    this.raidTarget = new Int16Array(capacity).fill(-1);
+    /** Index der getragenen Brut (-1 = keine). */
+    this.carryRef = new Int32Array(capacity).fill(-1);
 
     // --- Darstellung ------------------------------------------------------
     /** Animationsphase in Frames (float, wird beim Zeichnen gerundet). */
@@ -191,6 +212,9 @@ export class Ants {
     this.hp[i] = def.hp;
     this.hpMax[i] = def.hp;
     this.hunger[i] = 0;
+    this.hungerTol[i] = NUTRITION.HUNGER_TOL_MIN
+      + (opts.hungerTol !== undefined ? opts.hungerTol : 0.5)
+      * (NUTRITION.HUNGER_TOL_MAX - NUTRITION.HUNGER_TOL_MIN);
     this.age[i] = 0;
     this.carryType[i] = 0;
     this.carryNutrient[i] = 0;
@@ -208,6 +232,8 @@ export class Ants {
     this.trip[i] = 0;
     this.lifespan[i] = opts.lifespan !== undefined ? opts.lifespan : 0;
     this.stuck[i] = 0;
+    this.raidTarget[i] = -1;
+    this.carryRef[i] = -1;
     this.anim[i] = 0;
     this.count++;
     return i;
@@ -320,12 +346,68 @@ export class Ants {
         const gap = 1 - (colony.supply !== undefined ? colony.supply : 1);
         if (gap > 0.001) {
           this.hunger[i] += NUTRITION.HUNGER_RATE * gap;
-          if (this.hunger[i] >= 1) { this._die(i, level, ctx, 'Hunger'); continue; }
+          const tol = this.hungerTol[i] * this.phenoSize[i];
+          if (this.hunger[i] >= tol) { this._die(i, level, ctx, 'Hunger'); continue; }
         } else if (this.hunger[i] > 0) {
           this.hunger[i] = Math.max(0, this.hunger[i] - NUTRITION.HUNGER_RATE * 3);
         }
       }
-      const slow = this.hunger[i] > NUTRITION.HUNGER_SLOW ? 0.55 : 1;
+      let slow = this.hunger[i] > NUTRITION.HUNGER_SLOW ? 0.55 : 1;
+      if (colony) {
+        // Seuche zehrt und steckt Nachbarinnen an
+        if (colony.plague > 0) {
+          this.hp[i] -= GODMODE.PLAGUE_DAMAGE;
+          if (this.hp[i] <= 0) { this._die(i, level, ctx, 'Seuche'); continue; }
+        }
+        if (colony.frenzy > 0) slow *= GODMODE.FRENZY_SPEED;
+      }
+      /**
+       * Nachts wird oberirdisch langsamer gesammelt. Unter der Erde aendert
+       * sich nichts – dort ist es ohnehin immer dunkel.
+       */
+      if (!isNest && ctx.light !== undefined && ctx.light < 1) {
+        slow *= 1 - (1 - DAYNIGHT.ANT_NIGHT_SPEED) * (1 - ctx.light)
+          / (1 - DAYNIGHT.NIGHT_LIGHT);
+      }
+
+      // ---- Im Wasser? Ertrinken droht ------------------------------------
+      const hereCell = level.cells[(this.y[i] | 0) * level.w + (this.x[i] | 0)];
+      if (hereCell === WATER_CELL[level.kind]) {
+        this.hp[i] -= GODMODE.FLOOD_DAMAGE;
+        if (this.hp[i] <= 0) { this._die(i, level, ctx, 'Ertrunken'); continue; }
+        // Verzweifelt auf trockenes Land: eine Zelle in eine freie Richtung
+        for (let t = 0; t < 4; t++) {
+          const a = rng.angle();
+          const nx = (this.x[i] + Math.cos(a) * 1.4) | 0;
+          const ny = (this.y[i] + Math.sin(a) * 1.4) | 0;
+          if (!level.isSolid(nx, ny)) {
+            this.x[i] = nx + 0.5; this.y[i] = ny + 0.5;
+            this.px[i] = this.x[i]; this.py[i] = this.y[i];
+            break;
+          }
+        }
+        this.anim[i] += 0.3;
+        continue;
+      }
+
+      // ---- Verschuettet? Dann freigraben ---------------------------------
+      // Nach einem Einsturz steckt die Ameise in einer soliden Zelle. Sie
+      // kann sich befreien – das dauert, kostet aber kein Leben.
+      if (isNest && level.isSolid(this.x[i] | 0, this.y[i] | 0)) {
+        if (this.stuck[i] === 0) this.stuck[i] = STABILITY.BURY_TICKS;
+        this.stuck[i]--;
+        this.anim[i] += 0.3;
+        if (this.stuck[i] === 0) {
+          const bx = this.x[i] | 0, by = this.y[i] | 0;
+          const bc = level.cells[by * level.w + bx];
+          if (bc !== NEST_CELL.STONE && bc !== NEST_CELL.WATER) {
+            level.set(bx, by, NEST_CELL.TUNNEL);
+            level.setMeta(bx, by, 0);
+            if (ctx.world.stability) ctx.world.stability.request(level, bx, by, 4);
+          }
+        }
+        continue;
+      }
 
       // ---- Im Spinnennetz gefangen ---------------------------------------
       if (this.stuck[i] > 0) {
@@ -413,6 +495,27 @@ export class Ants {
             }
           }
         }
+        // Kiesel aufsammeln, wenn Baumaterial fehlt
+        if (this.carryType[i] === CARRY.NONE && under === SURFACE_CELL.PEBBLE
+            && colony && (colony.stores.pebble || 0) < 40) {
+          level.set(cx, cy, SURFACE_CELL.DIRT);
+          this.carryType[i] = CARRY.PEBBLE;
+          this.carryAmount[i] = FORTIFY.PEBBLE_PER_CELL;
+          this.trip[i] = 0;
+          this._beginReturn(level, i, ctx);
+          break;
+        }
+
+        // Harz an Pflanzen ernten (Baumaterial fuer Harzbarrieren)
+        if (this.carryType[i] === CARRY.NONE && under === SURFACE_CELL.PLANT
+            && colony && (colony.stores.resin || 0) < 60 && rng.chance(0.10)) {
+          this.carryType[i] = CARRY.RESIN;
+          this.carryAmount[i] = FORTIFY.RESIN_PER_HARVEST;
+          this.trip[i] = 0;
+          this._beginReturn(level, i, ctx);
+          break;
+        }
+
         // Alarm geht vor: Soldatinnen und aggressive Voelker ruecken aus
         const aggr = colony && colony.genome ? colony.genome.aggressivitaet : 0.5;
         const defends = this.caste[i] === CASTE.SOLDIER || aggr > 0.6;
@@ -445,6 +548,41 @@ export class Ants {
         }
         break;
       }
+
+      case ANT_STATE.RAID: {
+        // Zum fremden Eingang marschieren
+        const tx = this.targetX[i], ty = this.targetY[i];
+        if (tx < 0 || this.timer[i] === 0) { this._abortRaid(level, i, ctx); break; }
+        const want = Math.atan2(ty + 0.5 - this.y[i], tx + 0.5 - this.x[i]);
+        this.dir[i] += angleDelta(this.dir[i], want) * 0.3 + rng.range(-0.1, 0.1);
+        break;
+      }
+
+      case ANT_STATE.LOOT: {
+        // Mit Beute heim: zum eigenen Eingang
+        if (this.targetX[i] < 0) {
+          const p = ctx.portals.nearest(level.id, cid, this.x[i], this.y[i]);
+          if (p) { const pos = p.on(level.id); this.targetX[i] = pos.x; this.targetY[i] = pos.y; }
+        }
+        const lx = this.targetX[i], ly = this.targetY[i];
+        if (lx >= 0) {
+          const want = Math.atan2(ly + 0.5 - this.y[i], lx + 0.5 - this.x[i]);
+          this.dir[i] += angleDelta(this.dir[i], want) * 0.35 + rng.range(-0.08, 0.08);
+        } else {
+          this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+        }
+        break;
+      }
+
+      case ANT_STATE.ATTACK:
+      case ANT_STATE.DEFEND:
+        // Richtung setzt combat.js; hier nur leichtes Zittern
+        this.dir[i] += rng.range(-0.06, 0.06);
+        break;
+
+      case ANT_STATE.FLEE:
+        if (this.timer[i] === 0) { this.state[i] = ANT_STATE.RETURN; this._beginReturn(level, i, ctx); }
+        break;
 
       default:
         // An der Oberflaeche gibt es keine Nestaufgaben – zurueck auf Suche,
@@ -489,7 +627,9 @@ export class Ants {
   _nestBehaviour(level, i, ctx, colony, fields, rng) {
     switch (this.state[i]) {
       case ANT_STATE.DELIVER: {
-        if (this.carryType[i] !== CARRY.FOOD) {
+        const carried = this.carryType[i];
+        if (carried !== CARRY.FOOD && carried !== CARRY.PEBBLE
+            && carried !== CARRY.RESIN && carried !== CARRY.BROOD) {
           this.state[i] = ANT_STATE.EXPLORE;
           this.timer[i] = rng.intRange(30, 120);
           break;
@@ -499,13 +639,27 @@ export class Ants {
         if (here === 0 || this.timer[i] === 0) {
           // Angekommen (oder aufgegeben): einlagern
           if (colony) {
-            const key = FOOD_OF_CELL[this.carrySource[i]];
-            const prof = key ? FOOD.PROFILES[key].n : [0.34, 0.33, 0.33];
-            storeFood(colony, this.carryNutrient[i], this.carryAmount[i], prof);
+            if (carried === CARRY.FOOD) {
+              const key = FOOD_OF_CELL[this.carrySource[i]];
+              const prof = key ? FOOD.PROFILES[key].n : [0.34, 0.33, 0.33];
+              storeFood(colony, this.carryNutrient[i], this.carryAmount[i], prof);
+            } else if (carried === CARRY.BROOD) {
+              // Erbeutete Brut ist reines Protein
+              colony.storeArr[NUTRIENT.PROTEIN] = Math.min(colony.capacity[NUTRIENT.PROTEIN],
+                colony.storeArr[NUTRIENT.PROTEIN] + this.carryAmount[i]);
+              colony.intakeAcc[NUTRIENT.PROTEIN] += this.carryAmount[i];
+              colony.looted = (colony.looted || 0) + 1;
+            } else if (carried === CARRY.PEBBLE) {
+              colony.stores.pebble = (colony.stores.pebble || 0) + this.carryAmount[i];
+            } else {
+              colony.stores.resin = (colony.stores.resin || 0) + this.carryAmount[i];
+            }
             colony.deliveries = (colony.deliveries || 0) + 1;
           }
           this.carryType[i] = CARRY.NONE;
           this.carryAmount[i] = 0;
+          this.carryRef[i] = -1;
+          this.raidTarget[i] = -1;
           this.state[i] = ANT_STATE.EXPLORE;
           this.timer[i] = rng.intRange(30, 150);
           break;
@@ -559,9 +713,17 @@ export class Ants {
             * (colony.genome ? 0.6 + colony.genome.grabgeschwindigkeit : 1);
           const done = ctx.construction.contribute(colony, level, rate);
           if (done >= 0) {
-            this.carryType[i] = CARRY.SOIL;
-            this.carryAmount[i] = 1;
-            this._beginReturn(level, i, ctx);
+            if (colony.lastDugType === NEST_CELL.PEBBLE) {
+              // Kiesel ist Baumaterial und geht in die Vorratskammer
+              this.carryType[i] = CARRY.PEBBLE;
+              this.carryAmount[i] = FORTIFY.PEBBLE_PER_CELL;
+              this.state[i] = ANT_STATE.DELIVER;
+              this.timer[i] = 1200;
+            } else {
+              this.carryType[i] = CARRY.SOIL;
+              this.carryAmount[i] = 1;
+              this._beginReturn(level, i, ctx);
+            }
           }
           return;   // graben statt laufen
         }
@@ -570,6 +732,92 @@ export class Ants {
         }
         break;
       }
+
+      case ANT_STATE.RAID: {
+        if (this.timer[i] === 0) { this._abortRaid(level, i, ctx); break; }
+        // Im EIGENEN Nest zuerst hinaus – sonst sucht die Raeuberin im
+        // eigenen Bau nach Beute und der Raubzug kommt nie los.
+        if (level.colonyId === this.colony[i]) {
+          if (!fields || !this._steerField(level, i, fields.entrance, rng)) {
+            this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+          }
+          break;
+        }
+        // Im fremden Nest gibt es keine Distanzfelder – hier wird gesucht.
+        if ((i + ctx.tick) % 12 === 0 && ctx.combat
+            && ctx.combat.tryLoot(this, i, level, ctx)) {
+          this.targetX[i] = -1;
+          break;
+        }
+        // Tiefer ins Nest: nach unten und in die Breite tasten
+        this.dir[i] += rng.range(-0.5, 0.5);
+        if (rng.chance(0.08)) this.dir[i] = Math.PI / 2 + rng.range(-1.1, 1.1);
+        break;
+      }
+
+      case ANT_STATE.LOOT: {
+        // Mit Beute hinaus: irgendein Portal dieser Ebene
+        const p = ctx.portals.nearest(level.id, level.colonyId, this.x[i], this.y[i]);
+        if (p) {
+          const pos = p.on(level.id);
+          this.targetX[i] = pos.x;
+          this.targetY[i] = pos.y;
+          const want = Math.atan2(pos.y + 0.5 - this.y[i], pos.x + 0.5 - this.x[i]);
+          this.dir[i] += angleDelta(this.dir[i], want) * 0.35;
+        } else {
+          this.dir[i] += rng.range(-0.5, 0.5);
+        }
+        break;
+      }
+
+      case ANT_STATE.EVACUATE: {
+        // Brut in die Fluchtkammer tragen; die Koenigin flieht selbst
+        if (colony && colony.threat < 3 && this.carryType[i] !== CARRY.BROOD) {
+          this.state[i] = ANT_STATE.EXPLORE;
+          this.timer[i] = rng.intRange(60, 240);
+          break;
+        }
+        const ef = fields ? fields.escape : null;
+        if (this.carryType[i] === CARRY.BROOD) {
+          if (ef && ef.at(this.x[i] | 0, this.y[i] | 0) === 0) {
+            // Angekommen: ablegen
+            const bi = this.carryRef[i];
+            if (bi >= 0 && ctx.brood.alive[bi]) ctx.brood.carrier[bi] = -1;
+            this.carryType[i] = CARRY.NONE;
+            this.carryRef[i] = -1;
+            this.state[i] = ANT_STATE.EXPLORE;
+            this.timer[i] = 60;
+            break;
+          }
+          if (!ef || !this._steerField(level, i, ef, rng)) {
+            this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+          }
+          break;
+        }
+        // Noch nichts im Arm: Brut suchen
+        if (ctx.brood && (i + ctx.tick) % 9 === 0) {
+          const bi = ctx.brood.findLoose(this.colony[i], level.id, this.x[i], this.y[i], 8);
+          if (bi >= 0) {
+            ctx.brood.carrier[bi] = i;
+            this.carryType[i] = CARRY.BROOD;
+            this.carryRef[i] = bi;
+            break;
+          }
+        }
+        if (!fields || !this._steerField(level, i, fields.brood, rng)) {
+          this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+        }
+        break;
+      }
+
+      case ANT_STATE.ATTACK:
+      case ANT_STATE.DEFEND:
+        this.dir[i] += rng.range(-0.06, 0.06);
+        break;
+
+      case ANT_STATE.FLEE:
+        if (this.timer[i] === 0) { this.state[i] = ANT_STATE.EXPLORE; this.timer[i] = 120; }
+        break;
 
       case ANT_STATE.RETURN: {
         if (!fields || !this._steerField(level, i, fields.entrance, rng)) {
@@ -633,6 +881,14 @@ export class Ants {
     return true;
   }
 
+  /** Raubzug aufgeben: mit leeren Haenden heim. */
+  _abortRaid(level, i, ctx) {
+    this.raidTarget[i] = -1;
+    this.targetX[i] = -1;
+    this.state[i] = this.carryType[i] !== CARRY.NONE ? ANT_STATE.LOOT : ANT_STATE.RETURN;
+    if (this.state[i] === ANT_STATE.RETURN) this._beginReturn(level, i, ctx);
+  }
+
   /** Tod: Aas hinterlassen und Slot freigeben. */
   _die(i, level, ctx, cause) {
     const colony = ctx.colonies ? ctx.colonies.get(this.colony[i]) : null;
@@ -692,8 +948,10 @@ export class Ants {
 
   /** Versuch, ein Portal zu betreten. */
   _tryEnter(level, i, portal, ctx) {
-    if (this.state[i] !== ANT_STATE.RETURN) return;
-    if (!ctx.portals.canEnter(portal, level.id, this.colony[i])) return;
+    const st = this.state[i];
+    const raider = st === ANT_STATE.RAID;
+    if (st !== ANT_STATE.RETURN && st !== ANT_STATE.LOOT && !raider) return;
+    if (!ctx.portals.canEnter(portal, level.id, this.colony[i], raider)) return;
     ctx.portals.consume(portal, level.id);
     this.state[i] = ANT_STATE.TRANSIT;
     this.transit[i] = PORTALS.TRANSIT_TICKS;
@@ -714,9 +972,41 @@ export class Ants {
     this.py[i] = this.y[i];
     // In ein Nest geht es nach unten, an die Oberflaeche in eine Zufallsrichtung.
     this.dir[i] = destLevel && destLevel.kind === LEVEL_KIND.NEST ? Math.PI / 2 : ctx.rng.angle();
+    const wasRaiding = this.state[i] === ANT_STATE.RAID || this.raidTarget[i] >= 0;
+    const arrivesInNest = destLevel && destLevel.kind === LEVEL_KIND.NEST;
+    const foreignNest = arrivesInNest && destLevel.colonyId !== this.colony[i];
     this.state[i] = ANT_STATE.EXPLORE;
+    if (wasRaiding && !arrivesInNest && this.raidTarget[i] >= 0
+        && this.carryType[i] === CARRY.NONE) {
+      // Aus dem eigenen Nest heraus: weiter zum Ziel des Raubzugs
+      const target = ctx.portals.ofColony(this.raidTarget[i])[0];
+      if (target) {
+        const pos = target.on(destLevel.id);
+        if (pos) {
+          this.state[i] = ANT_STATE.RAID;
+          this.targetX[i] = pos.x;
+          this.targetY[i] = pos.y;
+          this.timer[i] = 60000;
+          this.transit[i] = 0;
+          this.portalRef[i] = -1;
+          this.portalCooldown[i] = PORTALS.REENTRY_COOLDOWN;
+          ctx.portals.completed(portal);
+          return;
+        }
+      }
+      this.raidTarget[i] = -1;
+    }
+    if (wasRaiding && foreignNest) {
+      this.state[i] = ANT_STATE.RAID;
+      this.transit[i] = 0;
+      this.portalRef[i] = -1;
+      this.portalCooldown[i] = PORTALS.REENTRY_COOLDOWN;
+      this.timer[i] = 60000;
+      ctx.portals.completed(portal);
+      return;
+    }
 
-    const toNest = destLevel && destLevel.kind === LEVEL_KIND.NEST;
+    const toNest = arrivesInNest;
     this.trip[i] = 0;                       // neuer Spurabschnitt
 
     if (!toNest && this.carryType[i] === CARRY.SOIL) {
@@ -726,7 +1016,9 @@ export class Ants {
       this.carryType[i] = CARRY.NONE;
       this.carryAmount[i] = 0;
       this.timer[i] = ctx.rng.intRange(DIG.DUMP_STAY[0], DIG.DUMP_STAY[1]);
-    } else if (toNest && this.carryType[i] === CARRY.FOOD) {
+    } else if (toNest && (this.carryType[i] === CARRY.FOOD
+        || this.carryType[i] === CARRY.PEBBLE || this.carryType[i] === CARRY.RESIN
+        || this.carryType[i] === CARRY.BROOD)) {
       // Beute in die Vorratskammer bringen
       this.state[i] = ANT_STATE.DELIVER;
       this.timer[i] = 1200;

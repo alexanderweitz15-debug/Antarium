@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Formicarium – Insekten-Oekosystem (Phase 1)</title>
+<title>Formicarium – Insekten-Oekosystem</title>
 <link rel="stylesheet" href="style.css">
 <!--
   PixiJS wird als ES-Modul von einer fest gepinnten CDN-Version geladen.
@@ -24,6 +24,7 @@
 <div id="ui">
   <header id="topbar" class="bar">
     <div id="breadcrumb" class="crumb">Oberflaeche</div>
+    <div id="clock" class="crumb clock" title="Tageszeit"></div>
     <nav id="levelnav" class="levelnav"></nav>
     <div class="grow"></div>
     <div id="speed" class="group" role="group" aria-label="Geschwindigkeit"></div>
@@ -34,8 +35,13 @@
       <button class="btn toggle" data-phero="2" title="Alarmspuren">Alarm</button>
     </div>
     <div class="group">
+      <button id="btn-pip" class="btn toggle" title="Bild-in-Bild: andere Ebene beobachten (Taste B)">PiP</button>
+      <button id="btn-cinema" class="btn toggle" title="Kinomodus: springt zu Ereignissen (Taste C)">Kino</button>
+      <button id="btn-autojump" class="btn toggle" title="Bei Angriff automatisch zur bedrohten Ebene wechseln">Auto</button>
+      <button id="btn-front" class="btn toggle" title="Kamera folgt dem Schwerpunkt der Kaempfe (Taste K)">Front</button>
       <button id="btn-research" class="btn toggle" title="Forschungsmenue: Evolution im Zeitraffer (Taste R)">Forsch.</button>
       <button id="btn-stats" class="btn toggle" title="Stammbaum und Statistik (Taste T)">Stamm.</button>
+      <button id="btn-settings" class="btn toggle" title="Einstellungen und Spielstaende (Taste O)">Einst.</button>
       <button id="btn-grid" class="btn toggle" title="Chunk-Raster einblenden (Taste G)">Raster</button>
       <button id="btn-trans" class="btn toggle on" title="Ebenenuebergang animieren">Blende</button>
       <button id="btn-legend" class="btn toggle on" title="Legende (Taste L)">Leg.</button>
@@ -81,6 +87,12 @@
     <div id="research" class="panel-body scroll"></div>
   </section>
 
+  <section id="panel-settings" class="panel" hidden>
+    <h2>Einstellungen
+      <button id="settings-close" class="btn tiny">x</button></h2>
+    <div id="settings" class="panel-body scroll"></div>
+  </section>
+
   <section id="panel-stats" class="panel" hidden>
     <h2>Stammbaum und Statistik
       <button id="stats-close" class="btn tiny">x</button></h2>
@@ -93,6 +105,14 @@
     <h2>Inspektor <button id="insp-close" class="btn tiny">x</button></h2>
     <div id="inspector-body" class="panel-body"></div>
   </div>
+
+  <section id="panel-minimap" class="panel">
+    <h2>Karte <span id="minimap-label" class="tiny"></span></h2>
+    <canvas id="minimap" width="168" height="168"></canvas>
+  </section>
+
+  <div id="pips"></div>
+  <div id="toasts"></div>
 
   <div id="perf" class="overlay" hidden></div>
   <div id="help" class="overlay help" hidden></div>

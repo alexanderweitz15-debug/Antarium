@@ -28,6 +28,12 @@ export const NEST_CELL = {
   DEBRIS: 9,
   WATER: 10,
   ENTRANCE: 11,
+  // --- Befestigungen (Phase 6) ------------------------------------------
+  REINFORCED: 12,   // verstaerkte Wand: schwerer zu durchgraben, sehr stabil
+  PILLAR: 13,       // Stuetzpfeiler: traegt die Decke einer breiten Kammer
+  RESIN: 14,        // Harzbarriere: klebrig, von Saeure aufloesbar
+  PLUG: 15,         // verschlossener Eingang aus Kiesel und Erde
+  TRAP: 16,         // Fallengrube: Luft, aber Absturzschaden
 };
 
 export const NEST_CELL_DEFS = [
@@ -43,7 +49,19 @@ export const NEST_CELL_DEFS = [
   { id: 9, key: 'debris', name: 'Truemmer', desc: 'Eingestuerztes Material. Muss weggeraeumt werden.', color: 0x3a2c1e, alt: 0x453525, solid: true, category: 'terrain' },
   { id: 10, key: 'water', name: 'Wasser', desc: 'Eingedrungenes Wasser. Ertraenkt Brut.', color: 0x2f6fa8, alt: 0x3a80bd, solid: true, category: 'terrain' },
   { id: 11, key: 'entrance', name: 'Nesteingang', desc: 'Portal zur Oberflaeche.', color: 0x14100c, alt: 0x0e0b08, solid: false, category: 'struktur' },
+
+  { id: 12, key: 'reinforced', name: 'Verstaerkte Wand', desc: 'Mit Kiesel gepackt: kaum grabbar, haelt Erdbeben stand.', color: 0x6b5a48, alt: 0x7d6a55, solid: true, category: 'befestigung' },
+  { id: 13, key: 'pillar', name: 'Stuetzpfeiler', desc: 'Traegt die Decke. Ohne Pfeiler stuerzen breite Kammern ein.', color: 0x8a7458, alt: 0x9c8567, solid: true, category: 'befestigung' },
+  { id: 14, key: 'resin', name: 'Harzbarriere', desc: 'Klebrig. Haelt Feinde auf, Saeure loest sie auf.', color: 0xb8863a, alt: 0xd0a052, solid: true, category: 'befestigung' },
+  { id: 15, key: 'plug', name: 'Verschlossener Eingang', desc: 'Kiesel und Erde im Schacht. Eigene Ameisen oeffnen bei Bedarf.', color: 0x5e5347, alt: 0x6e6153, solid: true, category: 'befestigung' },
+  { id: 16, key: 'trap', name: 'Fallengrube', desc: 'Verdeckte Grube hinter dem Eingang. Angreifer stuerzen hinein.', color: 0x15100b, alt: 0x0d0906, solid: false, category: 'befestigung' },
 ];
+
+/** Grabaufwand-Faktor je Zelltyp (1 = normal). Stein ist nicht grabbar. */
+export const DIG_HARDNESS = {
+  soil: 1, hardsoil: 2.5, pebble: 2, root: 2.8, debris: 0.4,
+  reinforced: 6, pillar: 5, resin: 3, plug: 1.5,
+};
 
 /** Kammertypen (stehen in level.meta der Kammerzellen). */
 export const CHAMBER = {

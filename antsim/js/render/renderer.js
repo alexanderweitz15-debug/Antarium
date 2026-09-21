@@ -17,13 +17,14 @@
  */
 
 import { PIXI } from './pixi.js';
-import { WORLD, RENDER, PHERO } from '../config.js';
+import { WORLD, RENDER, PHERO, DAYNIGHT } from '../config.js';
 import { LEVEL_KIND } from '../sim/levels.js';
 import { paintSurfaceChunk } from './surfaceView.js';
 import { paintNestChunk } from './nestView.js';
 import { CASTE_DEFS } from '../sim/castes.js';
 import { ANT_STATE } from '../sim/ants.js';
 import { SPECIES_LIST } from '../sim/creatures.js';
+import { Particles } from './particles.js';
 
 export class Renderer {
   /**
@@ -39,6 +40,8 @@ export class Renderer {
 
     /** @type {Map<number, {container:any, chunks:Array}>} */
     this.levelViews = new Map();
+    /** Bildschirmwackeln zulassen (Einstellung). */
+    this.shakeEnabled = true;
     /** Wiederverwendbare Pixelpuffer je Chunkgroesse. */
     this.scratch = new Map();
 
@@ -133,6 +136,29 @@ export class Renderer {
     this.selectSprite.visible = false;
     this.markerRoot.addChild(this.selectSprite);
 
+    // Hervorhebung der Legende: unter den Einheiten, ueber dem Terrain.
+    this.highlightG = new PIXI.Graphics();
+    this.highlightG.visible = false;
+    this.markerRoot.addChild(this.highlightG);
+    this._hlCell = -1;
+    this._hlMeta = -1;
+    this._hlKey = '';
+
+    // Teilchen liegen ueber Terrain und Einheiten, aber unter der Vorschau.
+    this.particles = new Particles(this);
+    this.particles.attach(this.worldRoot);
+
+    /**
+     * Tag-Nacht-Blende: ein bildschirmfuellendes Rechteck im Multiplizier-
+     * Modus waere teurer als noetig. Ein halbdurchsichtiges Rechteck ueber
+     * der Welt (aber unter der Oberflaeche) reicht voellig und kostet einen
+     * einzigen Zeichenaufruf.
+     */
+    this.nightVeil = new PIXI.Graphics();
+    this.nightVeil.alpha = 0;
+    this.hudRoot.addChild(this.nightVeil);
+    this._veilColor = -1;
+
     // Blende fuer den Ebenenuebergang (Bildschirmkoordinaten).
     this.fade = new PIXI.Graphics();
     this.fade.alpha = 0;
@@ -147,7 +173,35 @@ export class Renderer {
     const w = this.app.renderer.width, h = this.app.renderer.height;
     this.fade.clear();
     this.fade.rect(0, 0, w, h).fill(0x000000);
+    this._veilColor = -1;   // erzwingt Neuzeichnen der Nachtblende
   }
+
+  /**
+   * Nachtblende ueber die Oberflaeche legen. Nest-Ebenen bleiben unberuehrt:
+   * unter der Erde ist es immer dunkel, dort waere ein Tageswechsel falsch.
+   */
+  _updateNightVeil(level) {
+    const w = this.world;
+    const isSurface = level.kind === LEVEL_KIND.SURFACE;
+    if (!isSurface || !w.dayNightOn || w.light >= 1) {
+      this.nightVeil.alpha = 0;
+      return;
+    }
+    // Daemmerung faerbt warm, tiefe Nacht kalt
+    const dusk = w.dayPhase === 3 || w.dayPhase === 1;
+    const color = dusk ? DAYNIGHT.DUSK_TINT : DAYNIGHT.NIGHT_TINT;
+    if (color !== this._veilColor) {
+      const sw = this.app.renderer.width, sh = this.app.renderer.height;
+      this.nightVeil.clear();
+      this.nightVeil.rect(0, 0, sw, sh).fill(color);
+      this._veilColor = color;
+    }
+    const dark = (1 - w.light) / (1 - DAYNIGHT.NIGHT_LIGHT);
+    this.nightVeil.alpha = Math.min(0.62, dark * (dusk ? 0.30 : 0.62));
+  }
+
+  /** Vergangene Frames seit dem letzten Bild (fuer die Teilchen). */
+  setFrameDelta(dtFrames) { this._dtFrames = dtFrames; }
 
   resize(w, h) {
     if (!this.app) return;
@@ -201,7 +255,7 @@ export class Renderer {
   }
 
   /** Bis zu max dirty Chunks einer Ebene neu zeichnen und hochladen. */
-  flushDirty(level, max) {
+  flushDirty(level, max, quiet = false) {
     const view = this.levelViews.get(level.id);
     if (!view) return 0;
     const t0 = performance.now();
@@ -214,7 +268,11 @@ export class Renderer {
       c.ctx.putImageData(s.imageData, 0, 0);
       c.texture.source.update();
     });
-    if (done > 0) {
+    if (quiet) {
+      // Nachziehen fuer Bild-in-Bild soll die Messwerte der Hauptansicht
+      // nicht ueberschreiben – nur die Gesamtzahl mitzaehlen.
+      this.stats.chunkUploadsTotal += done;
+    } else if (done > 0) {
       this.stats.chunkUploads = done;
       this.stats.chunkUploadsTotal += done;
       this.stats.paintMs = performance.now() - t0;
@@ -295,9 +353,21 @@ export class Renderer {
     // Kamera anwenden
     const z = this.camera.zoom;
     this.worldRoot.scale.set(z);
+    /**
+     * Bildschirmwackeln: reine Anzeige, deshalb Math.random(). Es verschiebt
+     * nur den Wurzelcontainer – Kamera und Simulation bleiben unberuehrt,
+     * sonst wuerde ein Erdbeben die Mauszielerfassung verreissen.
+     */
+    let sx = 0, sy = 0;
+    const shake = this.shakeEnabled ? (this.world.shake || 0) : 0;
+    if (shake > 0.001) {
+      const amp = shake * 7;
+      sx = (Math.random() - 0.5) * amp;
+      sy = (Math.random() - 0.5) * amp;
+    }
     this.worldRoot.position.set(
-      -this.camera.x * z + this.app.renderer.width / 2,
-      -this.camera.y * z + this.app.renderer.height / 2,
+      -this.camera.x * z + this.app.renderer.width / 2 + sx,
+      -this.camera.y * z + this.app.renderer.height / 2 + sy,
     );
 
     this.flushDirty(level, RENDER.CHUNK_UPLOADS_PER_FRAME);
@@ -305,6 +375,9 @@ export class Renderer {
     this._drawBrood(level);
     this._drawAnts(level, alpha);
     this._drawCreatures(level, alpha);
+    this._drawHighlight(level);
+    this.particles.update(level.id, this._dtFrames || 1);
+    this._updateNightVeil(level);
     if (this.chunkGrid && this.chunkGrid.visible) {
       // Linienstaerke an den Zoom anpassen, damit sie duenn bleibt
       this.chunkGrid.scale.set(1);
@@ -512,6 +585,44 @@ export class Renderer {
   }
 
   /** Auswahlring auf eine Ameise setzen (-1 = aus). */
+  /**
+   * Alle sichtbaren Zellen eines Typs hervorheben (Legende beim Ueberfahren).
+   * cellId < 0 schaltet ab. Gezeichnet wird nur der sichtbare Ausschnitt –
+   * bei 160 000 Zellen waere alles andere Verschwendung.
+   */
+  setHighlight(cellId, meta) {
+    this._hlCell = cellId === undefined ? -1 : cellId;
+    this._hlMeta = meta === undefined ? -1 : meta;
+    this._hlKey = '';
+  }
+
+  _drawHighlight(level) {
+    const g = this.highlightG;
+    if (this._hlCell === undefined || this._hlCell < 0) {
+      if (g.visible) { g.visible = false; g.clear(); this._hlKey = ''; }
+      return;
+    }
+    const vis = this.camera.visibleCells(2, this._vis);
+    const key = this._hlCell + ':' + this._hlMeta + ':' + level.id + ':'
+      + (vis.x0 | 0) + ':' + (vis.y0 | 0) + ':' + (vis.x1 | 0) + ':' + (vis.y1 | 0);
+    if (key === this._hlKey) return;
+    this._hlKey = key;
+    g.visible = true;
+    g.clear();
+    const cs = WORLD.CELL_SIZE;
+    const x0 = Math.max(0, vis.x0 | 0), x1 = Math.min(level.w - 1, Math.ceil(vis.x1));
+    const y0 = Math.max(0, vis.y0 | 0), y1 = Math.min(level.h - 1, Math.ceil(vis.y1));
+    for (let y = y0; y <= y1; y++) {
+      const row = y * level.w;
+      for (let x = x0; x <= x1; x++) {
+        if (level.cells[row + x] !== this._hlCell) continue;
+        if (this._hlMeta >= 0 && level.meta[row + x] !== this._hlMeta) continue;
+        g.rect(x * cs, y * cs, cs, cs);
+      }
+    }
+    g.fill({ color: 0xffe08a, alpha: 0.42 });
+  }
+
   setSelection(antIndex, alpha = 1) {
     const ants = this.world.ants;
     if (antIndex < 0 || !ants.alive[antIndex] || ants.level[antIndex] !== this.camera.level.id

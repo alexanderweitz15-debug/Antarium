@@ -164,7 +164,10 @@ check('Terrain malen aendert Zellen', sandAfter > sandBefore + 30, (sandAfter - 
 
 // --- 6. Kolonie gruenden ---------------------------------------------------
 const colBefore = await page.evaluate(() => {
-  document.querySelectorAll('#tools .tool').forEach((b) => { if (b.textContent.includes('Kolonie')) b.click(); });
+  // Genau treffen: seit Phase 9 gibt es auch "Kolonie ausloeschen".
+  document.querySelectorAll('#tools .tool').forEach((b) => {
+    if (b.querySelector('span:last-child').textContent === 'Kolonie gruenden') b.click();
+  });
   return { colonies: formicarium.world.colonies.colonies.length, levels: formicarium.world.levels.levels.length };
 });
 await page.mouse.click(500, 300);
@@ -336,6 +339,126 @@ check('Kartenvorlage wird uebernommen', map.preset === 'geroell' && map.stone > 
   map.preset + ', ' + map.stone + ' Steinzellen');
 check('Neue Welt hat Nahrung und Kreaturen', map.nahrung > 100 && map.tiere > 10,
   map.nahrung + ' Quellen, ' + map.tiere + ' Tiere');
+
+// --- 16. Bild-in-Bild zeigt eine andere Ebene ------------------------------
+await page.evaluate(() => window.formicarium.game.togglePip());
+await page.waitForTimeout(1200);
+const pip = await page.evaluate(() => {
+  const f = window.formicarium;
+  const w = f.pip.windows[0];
+  if (!w) return { fenster: 0 };
+  const view = f.renderer.levelViews.get(w.levelId);
+  // Wurden die Chunk-Texturen der FREMDEN Ebene wirklich gezeichnet?
+  let gefuellt = 0;
+  for (const c of view.chunks.slice(0, 4)) {
+    const d = c.ctx.getImageData(0, 0, 8, 8).data;
+    for (let i = 3; i < d.length; i += 4) if (d[i] !== 0) { gefuellt++; break; }
+  }
+  const r = w.el.querySelector('.pip-body').getBoundingClientRect();
+  const stil = getComputedStyle(w.el).backgroundColor;
+  return {
+    fenster: f.pip.count, ebene: w.levelId, aktiv: f.world.levels.activeId,
+    chunks: w.chunks.length, gefuellt, breite: Math.round(r.width), rahmen: stil,
+  };
+});
+check('Bild-in-Bild zeigt eine andere Ebene',
+  pip.fenster === 1 && pip.ebene !== pip.aktiv && pip.chunks > 0
+  && pip.gefuellt === 4 && /rgba\(0, 0, 0, 0\)|transparent/.test(pip.rahmen),
+  JSON.stringify(pip));
+await page.evaluate(() => window.formicarium.game.togglePip());
+
+// --- 17. Eingriffe in der Werkzeugleiste -----------------------------------
+const godTools = await page.evaluate(() => {
+  const gruppen = [...document.querySelectorAll('#tools .tool-group')];
+  const g = gruppen.find((b) => b.querySelector('h3').textContent === 'Eingriffe');
+  return {
+    anzahl: g ? g.querySelectorAll('.tool').length : 0,
+    regler: document.querySelectorAll('#tools .slider-row input[type=range]').length,
+    modus: !!document.querySelector('#tools .btn.wide'),
+  };
+});
+check('Eingriffe stehen als Werkzeuge bereit mit Reglern',
+  godTools.anzahl >= 15 && godTools.regler === 2 && godTools.modus, JSON.stringify(godTools));
+
+const meteor = await page.evaluate(async () => {
+  const f = window.formicarium;
+  const vorher = f.world.levels.surface.cells.reduce((a, v) => a + (v === 1 ? 1 : 0), 0);
+  f.world.applyIntervention('meteor', f.world.levels.surface, 200, 200,
+    { power: 1.5, radius: 20, colonyId: 0 });
+  f.world.step();
+  await new Promise((r) => setTimeout(r, 200));
+  return {
+    erde: f.world.levels.surface.cells.reduce((a, v) => a + (v === 1 ? 1 : 0), 0) - vorher,
+    wackeln: +f.world.shake.toFixed(2), teilchen: f.renderer.particles.count,
+  };
+});
+check('Meteor schlaegt einen Krater, wackelt und wirft Teilchen',
+  meteor.erde > 20 && meteor.wackeln > 0 && meteor.teilchen > 5, JSON.stringify(meteor));
+
+// --- 18. Tag und Nacht -----------------------------------------------------
+const nacht = await page.evaluate(() => {
+  const f = window.formicarium;
+  f.world.tick = Math.round(10800 * 0.95);
+  f.world.step();
+  f.renderer.frame(1);
+  const dunkel = f.renderer.nightVeil.alpha;
+  f.world.tick = Math.round(10800 * 0.5);
+  f.world.step();
+  f.renderer.frame(1);
+  return { nacht: +dunkel.toFixed(2), mittag: +f.renderer.nightVeil.alpha.toFixed(2),
+    uhr: !!document.getElementById('clock') };
+});
+check('Nachts liegt eine Blende ueber der Oberflaeche',
+  nacht.nacht > 0.3 && nacht.mittag === 0 && nacht.uhr, JSON.stringify(nacht));
+
+// --- 19. Einstellungen und Spielstand --------------------------------------
+await page.evaluate(() => window.formicarium.game.togglePanel('settings'));
+await page.waitForTimeout(400);
+const einst = await page.evaluate(() => ({
+  offen: !document.getElementById('panel-settings').hidden,
+  schalter: document.querySelectorAll('#settings .check-row').length,
+  knoepfe: [...document.querySelectorAll('#settings .btn')].map((b) => b.textContent.trim()),
+}));
+check('Einstellungsfenster bietet Schalter und Spielstandknoepfe',
+  einst.offen && einst.schalter >= 6 && einst.knoepfe.includes('Speichern')
+  && einst.knoepfe.includes('Laden'), JSON.stringify(einst));
+
+const stand = await page.evaluate(() => {
+  const f = window.formicarium;
+  f.game.saveLocal();
+  const raw = localStorage.getItem('formicarium.save');
+  const d = JSON.parse(raw);
+  return { kb: Math.round(raw.length / 1024), tick: d.tick, version: d.saveVersion,
+    ebenen: d.levels.length, voelker: d.colonies.length };
+});
+check('Spielstand landet im Browserspeicher', stand.kb > 10 && stand.tick > 0
+  && stand.version === 1 && stand.ebenen >= 2, JSON.stringify(stand));
+
+await page.evaluate(() => localStorage.setItem('formicarium.save.pending', '1'));
+await page.reload({ waitUntil: 'load' });
+await page.waitForFunction(() => window.__booted === true, { timeout: 30000 });
+await page.waitForTimeout(900);
+const geladen = await page.evaluate(() => ({
+  tick: window.formicarium.world.tick, ameisen: window.formicarium.world.ants.count,
+}));
+check('Geladener Spielstand setzt die Welt fort',
+  geladen.tick >= stand.tick && geladen.ameisen > 0, JSON.stringify(geladen));
+
+// --- 20. Einheiten entfernen -----------------------------------------------
+const weg = await page.evaluate(() => {
+  const f = window.formicarium;
+  const lvl = f.world.levels.surface;
+  const a = f.world.ants;
+  let x = 0, y = 0, n = 0;
+  for (let i = 0; i < a.high && n < 1; i++) {
+    if (a.alive[i] && a.level[i] === lvl.id) { x = a.x[i]; y = a.y[i]; n++; }
+  }
+  const vorher = f.world.ants.count;
+  const entfernt = f.world.removeUnitsAt(lvl, x, y, 12);
+  return { entfernt, vorher, nachher: f.world.ants.count };
+});
+check('Werkzeug "Entfernen" loescht Einheiten im Umkreis',
+  weg.entfernt > 0 && weg.nachher < weg.vorher, JSON.stringify(weg));
 
 console.log('\n' + results.join('\n'));
 // Netzfehler des CDN (Vendor-Fallback greift) sind kein Testfehler.
