@@ -634,6 +634,27 @@ export class Ants {
           this.timer[i] = rng.intRange(120, 600);
           break;
         }
+        /**
+         * Am Ziel: aufnehmen, was dort liegt. Kiesel und Harz laufen ueber
+         * die vorhandenen Tragearten, alles Neue ueber CARRY.MATERIAL.
+         */
+        const under2 = level.cells[cy * level.w + cx];
+        if (colony.wantMaterial === 'pebble' && under2 === SURFACE_CELL.PEBBLE) {
+          level.set(cx, cy, SURFACE_CELL.DIRT);
+          this.carryType[i] = CARRY.PEBBLE;
+          this.carryAmount[i] = FORTIFY.PEBBLE_PER_CELL;
+          this.trip[i] = 0;
+          this._beginReturn(level, i, ctx);
+          break;
+        }
+        if (colony.wantMaterial === 'resin' && under2 === SURFACE_CELL.PLANT
+            && rng.chance(0.25)) {
+          this.carryType[i] = CARRY.RESIN;
+          this.carryAmount[i] = FORTIFY.RESIN_PER_HARVEST;
+          this.trip[i] = 0;
+          this._beginReturn(level, i, ctx);
+          break;
+        }
         const mat = materialUnder(level, cx, cy, colony, rng);
         if (mat) {
           this.carryType[i] = CARRY.MATERIAL;
@@ -677,9 +698,13 @@ export class Ants {
             }
           }
         }
-        // Kiesel aufsammeln, wenn Baumaterial fehlt
+        /**
+         * Kiesel aufsammeln, wenn Baumaterial fehlt. Die Grenze lag bei 40
+         * – das reichte gerade fuer Befestigungen, und fuer ein Bauwerk
+         * blieb nie etwas uebrig: der Vorrat stand dauerhaft bei null.
+         */
         if (this.carryType[i] === CARRY.NONE && under === SURFACE_CELL.PEBBLE
-            && colony && (colony.stores.pebble || 0) < 40) {
+            && colony && (colony.stores.pebble || 0) < FORTIFY.PEBBLE_STOCK) {
           level.set(cx, cy, SURFACE_CELL.DIRT);
           this.carryType[i] = CARRY.PEBBLE;
           this.carryAmount[i] = FORTIFY.PEBBLE_PER_CELL;

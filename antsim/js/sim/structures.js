@@ -33,6 +33,8 @@ export const STRUCT_BY_KEY = new Map(STRUCTURES.map((s, i) => [s.key, { ...s, id
 export const STRUCT_LIST = STRUCTURES.map((s, i) => ({ ...s, id: i }));
 export const RESEARCH_BY_KEY = new Map(RESEARCH_TREE.map((r) => [r.key, r]));
 export const MATERIAL_KEYS = MATERIALS.map((m) => m.key);
+/** Stoffe, die Sammlerinnen gezielt holen koennen (Chitin faellt nur an). */
+const FETCHABLE = new Set(['pebble', 'resin', 'clay', 'lime']);
 
 export class Structures {
   /** @param {import('./world.js').World} world */
@@ -156,9 +158,17 @@ export class Structures {
     for (const w of want) {
       const def = STRUCT_BY_KEY.get(w.key);
       const tier = def.tiers[w.tier - 1];
-      // Zuerst schauen, ob eine aeltere Stufe aufgeruestet werden kann
       if (this._countOf(colony, w.key) >= this._capFor(colony, w.key)) continue;
-      if (!this._canAfford(colony, tier.cost)) continue;
+      /**
+       * Ein Auftrag entsteht, sobald das Material ERREICHBAR ist – nicht
+       * erst, wenn es im Lager liegt. Andersherum gab es eine Verklemmung:
+       * ohne Auftrag holt niemand Material und niemand haelt etwas zurueck,
+       * also blieb der Vorrat bei null und es entstand nie ein Auftrag. Auf
+       * der Steppe stand deshalb nach elf Minuten kein einziges Bauwerk.
+       * Fehlt das Material dauerhaft, faellt der Auftrag ueber
+       * BUILD.MAX_STALLS wieder heraus.
+       */
+      if (!this._canObtain(colony, tier.cost)) continue;
       const level = def.where === 'surface' ? this.world.levels.surface : nest;
       const spot = this._findSpot(colony, level, def, ctx);
       if (!spot) continue;
@@ -226,6 +236,9 @@ export class Structures {
 
   _isSource(level, x, y, key) {
     const cell = level.cells[y * level.w + x];
+    // Kiesel und Harz liegen offen und brauchen keine weitere Bedingung
+    if (key === 'pebble') return cell === SURFACE_CELL.PEBBLE;
+    if (key === 'resin') return cell === SURFACE_CELL.PLANT;
     if (key === 'lime') {
       return cell === SURFACE_CELL.STONE
         || level.get(x - 1, y) === SURFACE_CELL.STONE
@@ -250,23 +263,31 @@ export class Structures {
     const job = colony.pendingBuild && colony.pendingBuild[0];
     let want = null;
     if (job) {
+      // Was der laufenden Baustelle fehlt, hat Vorrang
       for (const k of Object.keys(job.cost)) {
-        if ((colony.stores[k] || 0) < job.cost[k]
-            && (k === 'clay' || k === 'lime')) { want = k; break; }
+        if ((colony.stores[k] || 0) < job.cost[k] && FETCHABLE.has(k)) { want = k; break; }
       }
     }
     // Ohne Baustelle: vorsorglich auffuellen, was bekannt und knapp ist
     if (!want) {
-      for (const k of ['clay', 'lime']) {
-        if (colony.knownMaterials.has(k) && (colony.stores[k] || 0) < BUILD.STOCK_TARGET) {
-          want = k; break;
-        }
+      for (const k of ['clay', 'lime', 'pebble', 'resin']) {
+        if (!FETCHABLE.has(k)) continue;
+        if (k !== 'pebble' && k !== 'resin' && !colony.knownMaterials.has(k)) continue;
+        if ((colony.stores[k] || 0) < BUILD.STOCK_TARGET) { want = k; break; }
       }
     }
     colony.wantMaterial = want;
     if (!want) { colony.materialSpot = null; return; }
     const spot = this.findMaterialSpot(colony, want);
     colony.materialSpot = spot && spot.x >= 0 ? spot : null;
+  }
+
+  /** Kennt die Kolonie alle noetigen Stoffe? (Vorrat egal) */
+  _canObtain(colony, cost) {
+    for (const k of Object.keys(cost)) {
+      if (k !== 'pebble' && k !== 'resin' && !colony.knownMaterials.has(k)) return false;
+    }
+    return true;
   }
 
   _canAfford(colony, cost) {

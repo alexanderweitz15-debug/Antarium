@@ -362,8 +362,18 @@ export class Construction {
       // Bauen: Material pruefen und abbuchen
       const need = MATERIAL[target];
       if (need) {
+        /**
+         * BAUWERKE HABEN VORRANG. Steht ein Bauwerksauftrag an, wird ein
+         * Sockelvorrat nicht fuer Wandverstaerkungen angetastet. Ohne das
+         * fressen die Befestigungen jeden Kiesel sofort weg, und auf
+         * rohstoffarmen Karten entsteht nie ein Bauwerk: auf der Steppe
+         * stand der Kieselvorrat dauerhaft bei null.
+         */
+        const reserve = (colony.pendingBuild && colony.pendingBuild.length)
+          ? FORTIFY.PEBBLE_RESERVE : 0;
         for (const [res, n] of Object.entries(need)) {
-          if ((colony.stores[res] || 0) < n) {
+          const keep = res === 'pebble' ? reserve : 0;
+          if ((colony.stores[res] || 0) - keep < n) {
             // Material fehlt: Auftrag nach hinten schieben statt blockieren
             colony.digProgress = effort * 0.8;
             colony.digQueue.push(colony.digQueue.shift());

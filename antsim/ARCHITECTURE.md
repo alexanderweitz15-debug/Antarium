@@ -949,6 +949,30 @@ Speichergroesse – je Kartenvorlage aufgeschluesselt.
 
 **"Parallel" heisst hier: auf N Kernen.** Node laeuft einfaedig; tausend
 wirklich gleichzeitige Welten gibt es auf keiner Maschine dieser Groesse.
+Ein Lauf ueber 1000 Welten a 15 000 Ticks dauert auf drei Kernen rund
+21 Minuten.
+
+### Die Steppe: eine Verklemmung in drei Schichten
+
+Der auffaelligste Einzelbefund. Auf der trockenen Karte entstand nach elf
+Minuten kein einziges Bauwerk, waehrend es auf allen anderen fuenf bis
+zehn waren. Drei Ursachen lagen uebereinander:
+
+1. **Kein Wasser, also kein Lehm** – der Lehmsaum braucht Wasser in der
+   Naehe, und die Steppe hat keines. Behoben: Lehm faellt auch beim Graben
+   in tiefer Erde an, die jede Karte hat.
+2. **Der Einstiegsbau verlangte Lehm.** Der Wachposten der Stufe 1 kostete
+   Kiesel UND Lehm; ohne Lehm war auch er unerreichbar. Jetzt kostet er
+   nur Kiesel, ab Stufe 2 bleibt Lehm noetig.
+3. **Eine Reihenfolge-Verklemmung.** Ein Bauauftrag entstand nur, wenn das
+   Material bereits im Lager lag. Ohne Auftrag holte aber niemand Material
+   und niemand hielt etwas zurueck – die Befestigungen verbrauchten jeden
+   Kiesel sofort, der Vorrat blieb bei null, also entstand nie ein
+   Auftrag. Jetzt entsteht der Auftrag, sobald das Material ERREICHBAR
+   ist; er meldet seinen Bedarf an, Sammlerinnen holen gezielt, und ein
+   Sockelvorrat (`FORTIFY.PEBBLE_RESERVE`) bleibt fuer ihn reserviert.
+   Bleibt das Material dauerhaft aus, faellt der Auftrag nach
+   `BUILD.MAX_STALLS` Versuchen heraus.
 
 Der Massentest hat die Balance dieser Phase bestimmt, nicht das Bauchgefuehl:
 
@@ -958,6 +982,7 @@ Der Massentest hat die Balance dieser Phase bestimmt, nicht das Bauchgefuehl:
 | Buendnisse kamen praktisch nie vor | `DIPLO.DRIFT` hoch, Buendnisschwelle von 0.6 auf 0.5 |
 | Speicherstand 711 KB | Variantenkarte nicht mehr speichern (siehe 8l), abgeleitete Eigenschaftswerte neu rechnen: **279 KB** |
 | Steppe bekam nie Lehm (kein Wasser) | Lehm auch aus tiefer Erde beim Graben |
+| Steppe baute trotzdem nichts (0.7 gegen 5 Bauwerke) | drei Ursachen, alle behoben – siehe unten |
 
 ---
 
@@ -1176,7 +1201,12 @@ und zeichnen, Forschungsbaum und Charakter im Forschungsmenue,
 Kolonieliste mit Charakter, Baustoffen und Bauwerken – alles ohne
 Konsolenfehler.
 
-Massentest (`test/fuzz.mjs`): siehe Abschnitt 8q.
+Massentest (`test/fuzz.mjs`), **1000 Welten a 15 000 Ticks auf fuenf
+Kartenvorlagen, 21 Minuten**: keine Ausnahme, kein NaN, keine ungueltige
+Position, kein negativer Vorrat, und jeder der 1000 Speicherstaende liess
+sich schreiben und wieder lesen. Nach den Korrekturen dieser Phase sehen
+95 Prozent der Laeufe mindestens ein Bauwerk (Median sieben), und keine
+Linie waechst unbegrenzt. Einzelheiten in Abschnitt 8q.
 
 ---
 

@@ -828,6 +828,10 @@ export const FORTIFY = {
   MAX_ORDERS: 220,
   /** Kiesel je abgebauter Kieselzelle. */
   PEBBLE_PER_CELL: 3,
+  /** Bis zu diesem Vorrat wird Kiesel eingesammelt. */
+  PEBBLE_STOCK: 120,
+  /** So viel Kiesel bleibt fuer ein anstehendes Bauwerk reserviert. */
+  PEBBLE_RESERVE: 25,
   /** Harz je Ernte an einer Pflanze. */
   RESIN_PER_HARVEST: 2,
   /** Ticks, bis eine Pflanze wieder Harz gibt. */
@@ -1378,7 +1382,13 @@ export const STRUCTURES = [
     desc: 'Soldatinnen in Reichweite kaempfen deutlich staerker und fliehen nicht.',
     where: 'both',
     tiers: [
-      { cost: { pebble: 6, clay: 4 }, effort: 400, hp: 60, range: 8, bonus: 1.25 },
+      /**
+       * Stufe 1 braucht NUR Kiesel. Vorher stand hier auch Lehm – damit
+       * war auf trockenen Karten (Steppe: kein Wasser, also kein
+       * Lehmsaum) ueberhaupt kein Bauwerk erreichbar, und der ganze Zweig
+       * blieb dort unsichtbar. Ab Stufe 2 bleibt Lehm noetig.
+       */
+      { cost: { pebble: 6 }, effort: 400, hp: 60, range: 8, bonus: 1.25 },
       { cost: { pebble: 12, clay: 8, chitin: 4 }, effort: 700, hp: 110, range: 12, bonus: 1.5 },
       { cost: { pebble: 18, clay: 14, chitin: 10, lime: 6 }, effort: 1100, hp: 180, range: 16, bonus: 1.9 },
     ],
