@@ -6,8 +6,8 @@
  * Gruppen sind thematisch sortiert und kommentiert.
  */
 
-export const VERSION = '1.0.0';
-export const PHASE = 10;
+export const VERSION = '1.1.0';
+export const PHASE = 11;
 
 /** Fest gepinnte PixiJS-Version (CDN). Siehe index.html importmap. */
 export const PIXI_VERSION = '8.21.0';
@@ -158,6 +158,8 @@ export const RENDER = {
   BACKGROUND: 0x0b0d0c,
   /** Obergrenze gleichzeitig sichtbarer Ameisen-Sprites. */
   MAX_ANT_SPRITES: 6000,
+  /** Kantenlaenge eines Bauwerks in Zellen. */
+  STRUCT_CELLS: 3.2,
 };
 
 // ---------------------------------------------------------------------------
@@ -624,6 +626,8 @@ export const CREATURES = {
   },
   /** Kreaturen mutieren bei der Fortpflanzung (eigene kleine Evolution). */
   MUTATION: 0.06,
+  /** Wahrscheinlichkeit, dass ein erlegtes Tier Chitin hinterlaesst. */
+  CHITIN_DROP: 0.55,
   /** Ameisen greifen Raeuber an, wenn mindestens so viele in der Naehe sind. */
   SWARM_COURAGE: 5,
   /** Schaden pro Tick je Ameise ueber der Schwelle. */
@@ -698,6 +702,8 @@ export const GENES = [
 export const EVO = {
   /** Mitgift einer Jungkoenigin [Zucker, Protein, Fett]. */
   DOWRY: [140, 110, 70],
+  /** Reichweite, in der sich zwei Gefluegelte verschiedener Voelker paaren. */
+  MATE_RADIUS: 14,
   /** Grundstreuung der Mutation. */
   SIGMA_BASE: 0.055,
   SIGMA_MAX: 0.30,
@@ -866,6 +872,8 @@ export const COMBAT = {
   RAID_MIN_SOLDIERS: 8,
   RAID_INTERVAL: 3600,
   RAID_SQUAD: [8, 26],
+  /** Im Krieg hoechstens dieser Anteil des Volkes je Welle. */
+  RAID_MAX_SHARE: 0.45,
   /** Proteinbilanz, unter der auch friedliche Voelker raubziehen. */
   RAID_HUNGER: 0.7,
   /** Ticks, nach denen ein Raubzug aufgibt und heimkehrt. */
@@ -1015,6 +1023,488 @@ export const GODMODE = {
   BROOD_COUNT: 25,
   /** Schaden einer Sprengung an Einheiten im Radius. */
   BLAST_DAMAGE: 14,
+  /**
+   * Duefte, die auf die Koenigin zielen, treffen auch, wenn man in ihrer
+   * Kammer daneben zielt: der Radius gilt mal diesem Faktor, solange man
+   * in der richtigen Nest-Ebene ist.
+   */
+  QUEEN_SCENT_SLACK: 2.5,
   /** Staerke der kuenstlichen Duftspur je Zelle. */
   SCENT_AMOUNT: 180,
+};
+
+// ===========================================================================
+// PHASE 11 – EIGENSCHAFTEN (CHARAKTER VON KOENIGIN UND AMEISE)
+// ===========================================================================
+/**
+ * Jede Ameise wird mit Eigenschaften geboren, jede Koenigin hat einen
+ * Charakter. Beides sind KEINE Gene: Gene vererben und mutieren sich ueber
+ * Generationen (siehe GENES), Eigenschaften werden bei der Geburt gewuerfelt
+ * und aendern sich nie wieder.
+ *
+ * AUFBAU EINES EINTRAGS
+ *   key      eindeutiger Schluessel
+ *   name     Anzeigename
+ *   desc     was die Eigenschaft tut, in einem Satz
+ *   kind     'ant' | 'queen'
+ *   group    fuer Anzeige und Gegensatzpaare
+ *   rarity   Gewicht beim Wuerfeln (hoeher = haeufiger)
+ *   opposes  Schluessel, die sich mit dieser ausschliessen
+ *   mul      multiplikative Wirkungen auf Zahlenwerte
+ *   add      additive Wirkungen
+ *   flag     Name eines Verhaltensschalters (wird zu einem Bit)
+ *
+ * MULTIPLIKATOREN AMEISE
+ *   speed hp size damage carry dig life hungerTol sense build nurse
+ * ADDITIV AMEISE
+ *   courage  (Schwellwert fuer Flucht, hoeher = bleibt laenger)
+ *   loyalty  (Wahrscheinlichkeit, Heimatnest zu verteidigen)
+ *
+ * MULTIPLIKATOREN KOENIGIN (wirken auf die ganze Kolonie)
+ *   eggRate soldierShare aggression expansion buildDrive raidSize
+ *   research defence trade
+ * ADDITIV KOENIGIN
+ *   warBias  (Neigung, Krieg zu erklaeren, -1..1)
+ */
+export const TRAITS = [
+  // ---------------------------------------------------------------- Ameisen
+  // Koerper
+  { key: 'kraeftig', name: 'Kraeftig', kind: 'ant', group: 'koerper', rarity: 10,
+    desc: 'Groesser und zaeher, dafuer langsamer.',
+    mul: { hp: 1.35, size: 1.15, speed: 0.90 }, opposes: ['zierlich'] },
+  { key: 'zierlich', name: 'Zierlich', kind: 'ant', group: 'koerper', rarity: 10,
+    desc: 'Klein und flink, haelt aber wenig aus.',
+    mul: { hp: 0.75, size: 0.88, speed: 1.18 }, opposes: ['kraeftig'] },
+  { key: 'hart', name: 'Hart im Nehmen', kind: 'ant', group: 'koerper', rarity: 8,
+    desc: 'Nimmt deutlich weniger Schaden.', mul: { hp: 1.55 }, opposes: ['zerbrechlich'] },
+  { key: 'zerbrechlich', name: 'Zerbrechlich', kind: 'ant', group: 'koerper', rarity: 5,
+    desc: 'Haelt kaum etwas aus, ist dafuer schnell fertig ausgewachsen.',
+    mul: { hp: 0.55, speed: 1.10 }, opposes: ['hart'] },
+  { key: 'zaeh', name: 'Zaeh', kind: 'ant', group: 'koerper', rarity: 7,
+    desc: 'Haelt Hunger viel laenger aus.', mul: { hungerTol: 1.5 }, opposes: ['verfressen'] },
+  { key: 'verfressen', name: 'Verfressen', kind: 'ant', group: 'koerper', rarity: 7,
+    desc: 'Braucht mehr, traegt dafuer mehr auf einmal.',
+    mul: { hungerTol: 0.7, carry: 1.3 }, opposes: ['zaeh'] },
+  { key: 'langlebig', name: 'Langlebig', kind: 'ant', group: 'koerper', rarity: 6,
+    desc: 'Lebt deutlich laenger.', mul: { life: 1.45 }, opposes: ['eintagsfliege'] },
+  { key: 'eintagsfliege', name: 'Eintagsfliege', kind: 'ant', group: 'koerper', rarity: 4,
+    desc: 'Brennt schnell aus, arbeitet dafuer wie besessen.',
+    mul: { life: 0.55, speed: 1.15, dig: 1.3 }, opposes: ['langlebig'] },
+  { key: 'gepanzert', name: 'Gepanzert', kind: 'ant', group: 'koerper', rarity: 5,
+    desc: 'Dicker Panzer: mehr Trefferpunkte, weniger Tempo.',
+    mul: { hp: 1.7, speed: 0.82 } },
+  { key: 'langbeinig', name: 'Langbeinig', kind: 'ant', group: 'koerper', rarity: 8,
+    desc: 'Deutlich schneller unterwegs.', mul: { speed: 1.28 }, opposes: ['schwerfaellig'] },
+  { key: 'schwerfaellig', name: 'Schwerfaellig', kind: 'ant', group: 'koerper', rarity: 6,
+    desc: 'Langsam, aber traegt schwer.', mul: { speed: 0.78, carry: 1.45 },
+    opposes: ['langbeinig'] },
+  { key: 'scharfe_kiefer', name: 'Scharfe Kiefer', kind: 'ant', group: 'koerper', rarity: 7,
+    desc: 'Beisst deutlich haerter zu.', mul: { damage: 1.5 }, opposes: ['stumpfe_kiefer'] },
+  { key: 'stumpfe_kiefer', name: 'Stumpfe Kiefer', kind: 'ant', group: 'koerper', rarity: 4,
+    desc: 'Schlechte Kaempferin, graebt aber besser.',
+    mul: { damage: 0.6, dig: 1.35 }, opposes: ['scharfe_kiefer'] },
+
+  // Sinne und Arbeit
+  { key: 'scharfsichtig', name: 'Scharfsichtig', kind: 'ant', group: 'sinne', rarity: 8,
+    desc: 'Findet Nahrung und Feinde aus groesserer Entfernung.',
+    mul: { sense: 1.5 }, opposes: ['kurzsichtig'] },
+  { key: 'kurzsichtig', name: 'Kurzsichtig', kind: 'ant', group: 'sinne', rarity: 5,
+    desc: 'Sieht wenig, folgt dafuer Spuren besonders gut.',
+    mul: { sense: 0.65, trail: 1.4 }, opposes: ['scharfsichtig'] },
+  { key: 'spurentreu', name: 'Spurentreu', kind: 'ant', group: 'sinne', rarity: 9,
+    desc: 'Bleibt zuverlaessig auf der Ameisenstrasse.',
+    mul: { trail: 1.6 }, opposes: ['eigensinnig'] },
+  { key: 'eigensinnig', name: 'Eigensinnig', kind: 'ant', group: 'sinne', rarity: 7,
+    desc: 'Ignoriert Spuren oft und findet dafuer neue Quellen.',
+    mul: { trail: 0.45, sense: 1.25 }, opposes: ['spurentreu'], flag: 'PIONIER' },
+  { key: 'fleissig', name: 'Fleissig', kind: 'ant', group: 'arbeit', rarity: 10,
+    desc: 'Graebt und baut schneller.', mul: { dig: 1.4, build: 1.4 }, opposes: ['faul'] },
+  { key: 'faul', name: 'Faul', kind: 'ant', group: 'arbeit', rarity: 6,
+    desc: 'Legt haeufig Pausen ein.', mul: { dig: 0.6, build: 0.6, speed: 0.92 },
+    opposes: ['fleissig'] },
+  { key: 'fuersorglich', name: 'Fuersorglich', kind: 'ant', group: 'arbeit', rarity: 8,
+    desc: 'Pflegt Brut deutlich wirksamer.', mul: { nurse: 1.6 }, opposes: ['gleichgueltig'] },
+  { key: 'gleichgueltig', name: 'Gleichgueltig', kind: 'ant', group: 'arbeit', rarity: 5,
+    desc: 'Kuemmert sich kaum um Brut, sammelt dafuer lieber.',
+    mul: { nurse: 0.5, carry: 1.2 }, opposes: ['fuersorglich'] },
+  { key: 'sammlerin', name: 'Sammlerin', kind: 'ant', group: 'arbeit', rarity: 9,
+    desc: 'Traegt mehr je Fuhre.', mul: { carry: 1.5 } },
+  { key: 'buddlerin', name: 'Buddlerin', kind: 'ant', group: 'arbeit', rarity: 8,
+    desc: 'Geborene Graeberin.', mul: { dig: 1.75, speed: 0.95 } },
+  { key: 'baumeisterin', name: 'Baumeisterin', kind: 'ant', group: 'arbeit', rarity: 6,
+    desc: 'Errichtet Befestigungen deutlich schneller.', mul: { build: 1.9 } },
+  { key: 'sparsam', name: 'Sparsam', kind: 'ant', group: 'arbeit', rarity: 6,
+    desc: 'Verbraucht wenig und bleibt laenger bei Kraeften.',
+    mul: { hungerTol: 1.3, life: 1.15, speed: 0.95 } },
+
+  // Gemuet und Kampf
+  { key: 'tapfer', name: 'Tapfer', kind: 'ant', group: 'gemuet', rarity: 9,
+    desc: 'Flieht deutlich spaeter aus dem Kampf.',
+    add: { courage: 0.45 }, opposes: ['feige'] },
+  { key: 'feige', name: 'Feige', kind: 'ant', group: 'gemuet', rarity: 7,
+    desc: 'Rennt frueh weg, ueberlebt dafuer oefter.',
+    add: { courage: -0.45 }, mul: { speed: 1.08 }, opposes: ['tapfer'], flag: 'FLUCHTBEREIT' },
+  { key: 'tollkuehn', name: 'Tollkuehn', kind: 'ant', group: 'gemuet', rarity: 5,
+    desc: 'Flieht nie. Greift auch aussichtslos an.',
+    add: { courage: 1.0 }, mul: { damage: 1.2 }, flag: 'KEINE_FLUCHT', opposes: ['feige'] },
+  { key: 'jaehzornig', name: 'Jaehzornig', kind: 'ant', group: 'gemuet', rarity: 6,
+    desc: 'Greift Feinde von sich aus an, auch ohne Befehl.',
+    mul: { damage: 1.25 }, flag: 'ANGRIFFSLUSTIG' },
+  { key: 'besonnen', name: 'Besonnen', kind: 'ant', group: 'gemuet', rarity: 7,
+    desc: 'Kaempft nur, wenn es sich lohnt, und arbeitet sonst weiter.',
+    mul: { dig: 1.15, build: 1.15 }, flag: 'MEIDET_KAMPF', opposes: ['jaehzornig'] },
+  { key: 'gluecklich', name: 'Gluecklich', kind: 'ant', group: 'gemuet', rarity: 5,
+    desc: 'Entkommt Gefahren auffallend oft.',
+    mul: { life: 1.2, hungerTol: 1.15 }, flag: 'GLUECKSPILZ' },
+  { key: 'pechvogel', name: 'Pechvogel', kind: 'ant', group: 'gemuet', rarity: 4,
+    desc: 'Gerät staendig in Schwierigkeiten.',
+    mul: { life: 0.85, hp: 0.9 }, opposes: ['gluecklich'] },
+  { key: 'treu', name: 'Treu', kind: 'ant', group: 'gemuet', rarity: 8,
+    desc: 'Kehrt bei Bedrohung sofort ins Nest zurueck und verteidigt es.',
+    add: { loyalty: 0.5 }, opposes: ['streuner'] },
+  { key: 'streuner', name: 'Streuner', kind: 'ant', group: 'gemuet', rarity: 6,
+    desc: 'Zieht weit hinaus und findet entlegene Quellen.',
+    add: { loyalty: -0.4 }, mul: { sense: 1.2 }, opposes: ['treu'], flag: 'WEITWANDERIN' },
+  { key: 'wachsam', name: 'Wachsam', kind: 'ant', group: 'gemuet', rarity: 7,
+    desc: 'Schlaegt frueher Alarm und wird seltener ueberrascht.',
+    mul: { sense: 1.3, alarm: 1.5 } },
+  { key: 'nachtaktiv', name: 'Nachtaktiv', kind: 'ant', group: 'gemuet', rarity: 5,
+    desc: 'Arbeitet nachts ohne Tempoverlust, tagsueber langsamer.',
+    flag: 'NACHTAKTIV', opposes: ['sonnenkind'] },
+  { key: 'sonnenkind', name: 'Sonnenkind', kind: 'ant', group: 'gemuet', rarity: 5,
+    desc: 'Bei Tag besonders flink, nachts traege.',
+    flag: 'TAGAKTIV', opposes: ['nachtaktiv'] },
+  { key: 'giftig', name: 'Giftig', kind: 'ant', group: 'kampf', rarity: 4,
+    desc: 'Ihre Bisse wirken nach – Gegner verlieren weiter Kraft.',
+    mul: { damage: 1.15 }, flag: 'GIFT' },
+  { key: 'aufopfernd', name: 'Aufopfernd', kind: 'ant', group: 'kampf', rarity: 3,
+    desc: 'Reisst im Tod Feinde in der Naehe mit sich.',
+    add: { courage: 0.6 }, flag: 'PLATZT' },
+  { key: 'raeuberisch', name: 'Raeuberisch', kind: 'ant', group: 'kampf', rarity: 5,
+    desc: 'Nimmt auf Raubzuegen mehr Beute mit.',
+    mul: { carry: 1.3, damage: 1.1 }, flag: 'PLUENDERIN' },
+  { key: 'wachposten', name: 'Wachposten', kind: 'ant', group: 'kampf', rarity: 6,
+    desc: 'Bleibt am Eingang und laesst nichts durch.',
+    mul: { damage: 1.2, hp: 1.15 }, flag: 'TORWACHE' },
+
+  // ------------------------------------------------------------- Koeniginnen
+  { key: 'kriegstreiberin', name: 'Kriegstreiberin', kind: 'queen', group: 'haltung', rarity: 8,
+    desc: 'Sucht von sich aus Streit und fuehrt grosse Angriffe.',
+    mul: { aggression: 1.8, raidSize: 1.6, soldierShare: 1.5, eggRate: 0.9 },
+    add: { warBias: 0.7 }, opposes: ['friedfertige'] },
+  { key: 'friedfertige', name: 'Friedfertige', kind: 'queen', group: 'haltung', rarity: 8,
+    desc: 'Vermeidet Krieg, schliesst schnell Frieden, baut und sammelt lieber.',
+    mul: { aggression: 0.35, buildDrive: 1.4, eggRate: 1.2, soldierShare: 0.6 },
+    add: { warBias: -0.8 }, opposes: ['kriegstreiberin'] },
+  { key: 'eroberin', name: 'Eroberin', kind: 'queen', group: 'haltung', rarity: 6,
+    desc: 'Will Gebiet: haeufige Hochzeitsfluege, grosse Raubzuege.',
+    mul: { expansion: 1.9, raidSize: 1.4, aggression: 1.3 }, add: { warBias: 0.4 } },
+  { key: 'einsiedlerin', name: 'Einsiedlerin', kind: 'queen', group: 'haltung', rarity: 5,
+    desc: 'Bleibt fuer sich, graebt tief, mischt sich nirgends ein.',
+    mul: { expansion: 0.4, buildDrive: 1.6, aggression: 0.5, defence: 1.4 },
+    add: { warBias: -0.5 }, opposes: ['eroberin'] },
+  { key: 'bruetende', name: 'Bruetende', kind: 'queen', group: 'volk', rarity: 9,
+    desc: 'Legt viel mehr Eier, das Volk waechst schnell.',
+    mul: { eggRate: 1.7, soldierShare: 0.8 }, opposes: ['sparsame_koenigin'] },
+  { key: 'sparsame_koenigin', name: 'Sparsame', kind: 'queen', group: 'volk', rarity: 6,
+    desc: 'Wenige, aber kraeftige Nachkommen.',
+    mul: { eggRate: 0.65 }, add: { antTraitBonus: 1 }, opposes: ['bruetende'] },
+  { key: 'baumeisterin_q', name: 'Baumeisterin', kind: 'queen', group: 'volk', rarity: 7,
+    desc: 'Das Volk befestigt und graebt weit ueber das Noetige hinaus.',
+    mul: { buildDrive: 2.0, defence: 1.3, research: 1.2 } },
+  { key: 'forscherin', name: 'Forscherin', kind: 'queen', group: 'volk', rarity: 6,
+    desc: 'Neue Bauweisen werden viel schneller entdeckt.',
+    mul: { research: 2.2, buildDrive: 1.2, aggression: 0.8 } },
+  { key: 'haendlerin', name: 'Sammlerkoenigin', kind: 'queen', group: 'volk', rarity: 7,
+    desc: 'Grosse Lager, effiziente Sammlerinnen.',
+    mul: { trade: 1.6, eggRate: 1.1 } },
+  { key: 'tyrannin', name: 'Tyrannin', kind: 'queen', group: 'haltung', rarity: 5,
+    desc: 'Treibt das Volk an: alles schneller, alle sterben frueher.',
+    mul: { eggRate: 1.3, aggression: 1.5, buildDrive: 1.3 }, flag: 'ANTREIBERIN' },
+  { key: 'fuersorgliche_q', name: 'Fuersorgliche', kind: 'queen', group: 'volk', rarity: 7,
+    desc: 'Brut wird besser versorgt, kaum eine Larve verhungert.',
+    mul: { eggRate: 1.15, defence: 1.1 }, flag: 'GUTE_AMME' },
+  { key: 'paranoide', name: 'Misstrauische', kind: 'queen', group: 'haltung', rarity: 6,
+    desc: 'Rechnet staendig mit Angriffen: viele Soldatinnen, starke Tore.',
+    mul: { soldierShare: 1.8, defence: 1.7, expansion: 0.7 }, add: { warBias: 0.2 } },
+  { key: 'grosszuegige', name: 'Grosszuegige', kind: 'queen', group: 'haltung', rarity: 4,
+    desc: 'Schliesst leicht Buendnisse und teilt sogar Nahrung.',
+    mul: { aggression: 0.6, trade: 1.3 }, add: { warBias: -0.6 }, flag: 'BUENDNISFREUDIG' },
+  { key: 'nachtkoenigin', name: 'Nachtkoenigin', kind: 'queen', group: 'volk', rarity: 4,
+    desc: 'Ihr Volk arbeitet nachts ohne Einbussen.', flag: 'NACHTVOLK' },
+  { key: 'zaehe_koenigin', name: 'Zaehe', kind: 'queen', group: 'volk', rarity: 6,
+    desc: 'Das ganze Volk uebersteht Hunger und Seuchen besser.',
+    mul: { defence: 1.2 }, flag: 'ZAEHES_VOLK' },
+  { key: 'wanderkoenigin', name: 'Wanderkoenigin', kind: 'queen', group: 'volk', rarity: 4,
+    desc: 'Sammlerinnen ziehen weit hinaus und finden entlegene Quellen.',
+    mul: { trade: 1.4, expansion: 1.3 }, flag: 'WEITES_REVIER' },
+  { key: 'blutruenstige', name: 'Blutruenstige', kind: 'queen', group: 'haltung', rarity: 3,
+    desc: 'Krieg ohne Ende: erklaert von selbst Kriege und macht nie Frieden.',
+    mul: { aggression: 2.4, raidSize: 2.0, soldierShare: 1.7, eggRate: 0.85 },
+    add: { warBias: 1.0 }, flag: 'KEIN_FRIEDEN', opposes: ['friedfertige', 'grosszuegige'] },
+  { key: 'geduldige', name: 'Geduldige', kind: 'queen', group: 'haltung', rarity: 6,
+    desc: 'Schlaegt selten zu, dann aber mit allem, was sie hat.',
+    mul: { raidSize: 2.2, aggression: 0.7 }, flag: 'GROSSE_WELLE' },
+  { key: 'giftkoenigin', name: 'Giftkoenigin', kind: 'queen', group: 'volk', rarity: 4,
+    desc: 'Ihr Volk bringt auffallend viele giftige Ameisen hervor.',
+    add: { traitPush: 'giftig' } },
+  { key: 'panzerkoenigin', name: 'Panzerkoenigin', kind: 'queen', group: 'volk', rarity: 5,
+    desc: 'Ihr Volk bringt auffallend viele gepanzerte Ameisen hervor.',
+    add: { traitPush: 'gepanzert' } },
+];
+
+export const TRAIT_CFG = {
+  /** Anzahl Eigenschaften je Ameise (gewuerfelt zwischen min und max). */
+  ANT_MIN: 0,
+  ANT_MAX: 2,
+  /** Wahrscheinlichkeit, dass eine Ameise ueberhaupt eine bekommt. */
+  ANT_CHANCE: 0.55,
+  /** Anzahl Charakterzuege je Koenigin. */
+  QUEEN_MIN: 1,
+  QUEEN_MAX: 3,
+  /** Eine per traitPush bevorzugte Eigenschaft ist so viel wahrscheinlicher. */
+  PUSH_FACTOR: 6,
+  /** Grundmut: ab welchem Trefferpunkteanteil eine Ameise flieht. */
+  BASE_COURAGE: 0.3,
+  /** Wirkung von NACHTAKTIV/TAGAKTIV auf das Tempo. */
+  RHYTHM_BONUS: 1.25,
+  RHYTHM_MALUS: 0.80,
+  /** Giftbiss: Schaden je Tick und Dauer in Ticks. */
+  POISON_DAMAGE: 0.05,
+  POISON_TICKS: 150,
+  /** Aufopfernd: Schaden und Radius beim Platzen. */
+  BURST_DAMAGE: 6,
+  BURST_RADIUS: 2.5,
+  /** Gluecklich: Wahrscheinlichkeit, einem toedlichen Treffer zu entgehen. */
+  LUCKY_DODGE: 0.25,
+};
+
+// ===========================================================================
+// PHASE 11 – DIPLOMATIE UND KRIEG
+// ===========================================================================
+export const DIPLO = {
+  /** Ausgangsbeziehung zwischen zwei Voelkern (leicht feindselig). */
+  START: -0.1,
+  /** Schwellen der Haltungen (siehe sim/diplomacy.js). */
+  WAR_BELOW: -0.35,
+  PEACE_ABOVE: 0.15,
+  ALLY_ABOVE: 0.5,
+  /** Ticks zwischen zwei Durchlaeufen der Beziehungsrechnung. */
+  UPDATE_INTERVAL: 300,
+  /** Schritt, mit dem sich eine Beziehung ihrer Ruhelage naehert. */
+  DRIFT: 0.035,
+  /** Wie stark der Charakter der Koenigin die Ruhelage verschiebt. */
+  BIAS_WEIGHT: 0.7,
+  /** Wahrscheinlichkeit je Durchlauf, dass eine Koenigin selbst Krieg erklaert. */
+  SELF_WAR_CHANCE: 0.02,
+  /** Beziehungsverlust je gefallener Ameise durch den anderen. */
+  LOSS_PER_KILL: 0.004,
+  /** Beziehungsgewinn je Durchlauf ohne Zwischenfall. */
+  CALM_PER_STEP: 0.01,
+
+  /** Kriegsduft auf die Koenigin: so lange bleibt das Volk auf Kriegspfad. */
+  ZEAL_TICKS: 9000,
+  /** Kriegsduft auf Arbeiterinnen: kurze Wut, kein Krieg. */
+  RAGE_TICKS: 1800,
+  /** Auf Kriegspfad kommen die Wellen in diesem Anteil des Normalabstands. */
+  WARPATH_SPEEDUP: 0.35,
+  /** Groesse der ersten Welle und Wachstum je weiterer. */
+  WAVE_BASE: 8,
+  WAVE_GROWTH: 1.45,
+  /** Nach so vielen Wellen wird nicht weiter aufgestockt. */
+  WAVE_MAX_STEPS: 6,
+  /** Im Krieg werden auch kleine Voelker angegriffen (sonst ab 40 Tieren). */
+  WAR_MIN_TARGET: 8,
+};
+
+// ===========================================================================
+// PHASE 11 – MATERIALIEN, BAUWERKE UND FORSCHUNG
+// ===========================================================================
+/**
+ * MATERIALIEN
+ *   Kiesel und Harz gab es schon (FORTIFY). Dazu kommen drei, die aus der
+ *   Welt kommen und nicht aus dem Nichts:
+ *     Lehm   – aus feuchter Erde in Wassernaehe
+ *     Kalk   – aus Stein, muehsam abzubauen
+ *     Chitin – von erlegten Kreaturen und toten Ameisen
+ *   Jedes Material steht in colony.stores und wird von Sammlerinnen
+ *   eingetragen wie Nahrung.
+ */
+export const MATERIALS = [
+  { key: 'pebble', name: 'Kiesel', color: 0xa8a49b,
+    desc: 'Aus Kieselzellen. Grundstoff jeder Mauer.' },
+  { key: 'resin', name: 'Harz', color: 0xd9a441,
+    desc: 'Von Pflanzen. Klebrig, haelt Bauten zusammen und bremst Feinde.' },
+  { key: 'clay', name: 'Lehm', color: 0x8a6a44,
+    desc: 'Aus feuchter Erde am Wasser. Formbar, traegt viel.' },
+  { key: 'lime', name: 'Kalk', color: 0xd8d2c4,
+    desc: 'Aus Stein geschlagen. Hart, aber teuer zu gewinnen.' },
+  { key: 'chitin', name: 'Chitin', color: 0x6b4a2f,
+    desc: 'Von erlegten Tieren. Leicht und zaeh, bestes Panzermaterial.' },
+];
+
+/**
+ * BAUWERKE
+ *   Anders als eine Befestigungszelle ist ein Bauwerk ein EINTRAG mit
+ *   Zustand: Stufe, Trefferpunkte, Ladezeit. Es steht auf genau einer Zelle
+ *   und wirkt von dort aus.
+ *
+ *   tiers gibt je Stufe die Werte an. Eine Stufe wird erst gebaut, wenn die
+ *   Kolonie sie erforscht hat (siehe RESEARCH_TREE).
+ */
+export const STRUCTURES = [
+  {
+    key: 'turret', name: 'Saeurespeier', cell: 'turret', icon: 'glyph:▲',
+    desc: 'Schiesst Saeure auf Feinde in Reichweite. Braucht Nachschub aus dem Lager.',
+    where: 'both',
+    tiers: [
+      { cost: { pebble: 8, resin: 4 }, effort: 600, hp: 40, range: 9, damage: 2.2, reload: 45 },
+      { cost: { pebble: 14, resin: 8, clay: 6 }, effort: 900, hp: 70, range: 13, damage: 3.6, reload: 36 },
+      { cost: { pebble: 20, resin: 12, lime: 10, chitin: 6 }, effort: 1400, hp: 120, range: 18, damage: 5.5, reload: 26 },
+    ],
+  },
+  {
+    key: 'sling', name: 'Harzschleuder', cell: 'sling', icon: 'glyph:●',
+    desc: 'Wirft Harzklumpen. Wenig Schaden, verklebt Feinde dafuer.',
+    where: 'surface',
+    tiers: [
+      { cost: { resin: 10 }, effort: 500, hp: 30, range: 11, damage: 0.8, reload: 70, slow: 0.5 },
+      { cost: { resin: 18, clay: 8 }, effort: 800, hp: 55, range: 15, damage: 1.4, reload: 55, slow: 0.38 },
+      { cost: { resin: 26, clay: 14, chitin: 8 }, effort: 1200, hp: 90, range: 20, damage: 2.2, reload: 42, slow: 0.25 },
+    ],
+  },
+  {
+    key: 'guardpost', name: 'Wachposten', cell: 'guardpost', icon: 'glyph:■',
+    desc: 'Soldatinnen in Reichweite kaempfen deutlich staerker und fliehen nicht.',
+    where: 'both',
+    tiers: [
+      { cost: { pebble: 6, clay: 4 }, effort: 400, hp: 60, range: 8, bonus: 1.25 },
+      { cost: { pebble: 12, clay: 8, chitin: 4 }, effort: 700, hp: 110, range: 12, bonus: 1.5 },
+      { cost: { pebble: 18, clay: 14, chitin: 10, lime: 6 }, effort: 1100, hp: 180, range: 16, bonus: 1.9 },
+    ],
+  },
+  {
+    key: 'granary', name: 'Speicherbau', cell: 'granary', icon: 'glyph:▬',
+    desc: 'Vergroessert das Lager der Kolonie deutlich.',
+    where: 'nest',
+    tiers: [
+      { cost: { clay: 8 }, effort: 350, hp: 50, store: 400 },
+      { cost: { clay: 16, lime: 6 }, effort: 600, hp: 90, store: 1000 },
+      { cost: { clay: 24, lime: 12, chitin: 6 }, effort: 950, hp: 150, store: 2200 },
+    ],
+  },
+  {
+    key: 'incubator', name: 'Brutstube', cell: 'incubator', icon: 'glyph:○',
+    desc: 'Brut in Reichweite reift schneller und verhungert seltener.',
+    where: 'nest',
+    tiers: [
+      { cost: { clay: 6, resin: 4 }, effort: 400, hp: 45, range: 10, speed: 1.35 },
+      { cost: { clay: 12, resin: 8, lime: 4 }, effort: 700, hp: 80, range: 14, speed: 1.7 },
+      { cost: { clay: 20, resin: 14, lime: 10, chitin: 6 }, effort: 1100, hp: 130, range: 18, speed: 2.2 },
+    ],
+  },
+  {
+    key: 'workshop', name: 'Werkstatt', cell: 'workshop', icon: 'glyph:◆',
+    desc: 'Beschleunigt die Forschung und senkt die Baukosten im Umkreis.',
+    where: 'nest',
+    tiers: [
+      { cost: { pebble: 6, clay: 6 }, effort: 450, hp: 50, research: 1.5, discount: 0.9 },
+      { cost: { pebble: 12, clay: 12, lime: 6 }, effort: 750, hp: 90, research: 2.2, discount: 0.8 },
+      { cost: { pebble: 20, clay: 20, lime: 12, chitin: 8 }, effort: 1200, hp: 140, research: 3.2, discount: 0.68 },
+    ],
+  },
+];
+
+/**
+ * FORSCHUNG
+ *   Forschungspunkte entstehen von selbst: aus eingetragener Nahrung, aus
+ *   fertiggestellten Bauten und aus der Werkstatt. Es gibt keinen Knopf –
+ *   die Kolonie lernt, weil sie arbeitet.
+ *
+ *   needs nennt Vorbedingungen, cost die Punkte.
+ */
+export const RESEARCH_TREE = [
+  { key: 'mauerbau', name: 'Mauerbau', cost: 60, needs: [],
+    unlocks: ['turret:1', 'guardpost:1'],
+    desc: 'Die ersten festen Bauwerke: Saeurespeier und Wachposten.' },
+  { key: 'lehmgrube', name: 'Lehmgrube', cost: 110, needs: ['mauerbau'],
+    unlocks: ['material:clay', 'granary:1', 'workshop:1'],
+    desc: 'Lehm wird als Material erkannt. Speicherbau und Werkstatt werden moeglich.' },
+  { key: 'harzkunde', name: 'Harzkunde', cost: 130, needs: ['mauerbau'],
+    unlocks: ['sling:1', 'incubator:1'],
+    desc: 'Harz laesst sich schleudern und als Waerme fuer die Brut nutzen.' },
+  { key: 'steinmetz', name: 'Steinmetz', cost: 210, needs: ['lehmgrube'],
+    unlocks: ['material:lime', 'turret:2', 'guardpost:2'],
+    desc: 'Kalk wird aus Stein gewonnen. Bauwerke der zweiten Stufe.' },
+  { key: 'panzerei', name: 'Panzerei', cost: 250, needs: ['harzkunde'],
+    unlocks: ['material:chitin', 'sling:2', 'incubator:2'],
+    desc: 'Chitin erlegter Tiere wird verbaut.' },
+  { key: 'vorratshaltung', name: 'Vorratshaltung', cost: 280, needs: ['lehmgrube'],
+    unlocks: ['granary:2', 'workshop:2'],
+    desc: 'Groessere Speicher und bessere Werkstaetten.' },
+  { key: 'saeurechemie', name: 'Saeurechemie', cost: 420, needs: ['steinmetz', 'panzerei'],
+    unlocks: ['turret:3', 'sling:3'],
+    desc: 'Die staerksten Geschuetze. Reichweite und Schaden steigen deutlich.' },
+  { key: 'festungsbau', name: 'Festungsbau', cost: 460, needs: ['steinmetz', 'vorratshaltung'],
+    unlocks: ['guardpost:3', 'granary:3', 'workshop:3', 'incubator:3'],
+    desc: 'Alle uebrigen Bauwerke erreichen ihre hoechste Stufe.' },
+];
+
+export const BUILD = {
+  /** Hoechstzahl Bauwerke je Kolonie. */
+  MAX_PER_COLONY: 40,
+  /**
+   * Forschungspunkte. Die erste Fassung war viel zu langsam: in einem
+   * Massentest ueber 200 Laeufe hatten 49 Prozent der Spiele nach elf
+   * Minuten NICHT EIN Bauwerk gesehen und der Median lag bei einer
+   * einzigen erforschten Stufe von acht. Jetzt ist die erste Stufe nach
+   * wenigen Minuten da und der Baum in einer langen Partie zu schaffen.
+   */
+  /** Forschungspunkte je eingetragener Nahrungseinheit. */
+  POINTS_PER_FOOD: 0.022,
+  /** Forschungspunkte je fertiggestellter Bauzelle. */
+  POINTS_PER_BUILD: 0.6,
+  /** Grundpunkte je Sekunde und hundert Ameisen. */
+  POINTS_PER_TICK: 0.0060,
+  /** Hoechstzahl Ameisen, die gleichzeitig an einem Bauwerk arbeiten. */
+  MAX_BUILDERS: 12,
+  /** Ticks, die eine Ameise hoechstens an einer Baustelle bleibt. */
+  JOB_TIMEOUT: 1800,
+  /** So oft darf eine Baustelle am fehlenden Material scheitern. */
+  MAX_STALLS: 6,
+  /** Ticks, die eine gefundene Fundstelle gueltig bleibt. */
+  SPOT_CACHE_TICKS: 1800,
+  /** Rasterweite und Reichweite der Fundstellensuche (Zellen). */
+  SPOT_SCAN_STEP: 3,
+  SPOT_MAX_DIST: 170,
+  /** Wunschvorrat je neuem Material, auch ohne offene Baustelle. */
+  STOCK_TARGET: 40,
+  /** Anteil der Sammlerinnen, der Material statt Nahrung holt. */
+  FETCH_SHARE: 0.12,
+  /** Ticks zwischen zwei Pruefungen des Materialbedarfs. */
+  WANT_INTERVAL: 600,
+  /** Ticks zwischen zwei Durchlaeufen der Bauwerksplanung. */
+  PLAN_INTERVAL: 240,
+  /** Ticks zwischen zwei Durchlaeufen der Bauwerkswirkung. */
+  TICK_INTERVAL: 6,
+  /** Mindestabstand zweier gleicher Bauwerke in Zellen. */
+  MIN_SPACING: 7,
+  /** Lehmsaum: Radius um Wasser und Wahrscheinlichkeit je Ueberschreiten. */
+  CLAY_RADIUS: 6,
+  CLAY_CHANCE: 0.10,
+  /** Kalk: Wahrscheinlichkeit, an einer Steinzelle etwas abzuschlagen. */
+  LIME_CHANCE: 0.06,
+  /** Lehm beim Graben: ab dieser Tiefe (Nestzeile) und mit dieser Chance. */
+  CLAY_DEPTH: 30,
+  CLAY_DIG_CHANCE: 0.30,
+  /** Ausbeute je abgebauter Materialzelle. */
+  YIELD: { clay: 3, lime: 2, chitin: 4 },
+  /** Wahrscheinlichkeit, dass ein erlegtes Tier Chitin hinterlaesst. */
+  CHITIN_DROP: 0.55,
+  /** Lagerobergrenze je Material ohne Speicherbau. */
+  MATERIAL_CAP: 300,
+  /** Ein Geschuetz verbraucht Vorrat je Schuss. */
+  SHOT_COST: { sugar: 0.15 },
+  /** Schaden, den ein Bauwerk beim Einsturz nimmt. */
+  COLLAPSE_DAMAGE: 40,
 };

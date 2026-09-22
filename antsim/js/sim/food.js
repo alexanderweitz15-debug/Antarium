@@ -33,7 +33,6 @@ for (let id = 0; id < FOOD_OF_CELL.length; id++) {
   DOMINANT[id] = best;
 }
 
-export function foodProfile(cellType) { return PROFILE[cellType] || null; }
 export function dominantNutrient(cellType) { return DOMINANT[cellType]; }
 export function isFoodCell(cellType) { return PROFILE[cellType] !== null; }
 
@@ -253,6 +252,16 @@ export class FoodSystem {
         acc += 0.00020 * Math.max(0, -reg);
         if (h < acc) { level.set(x, y, SURFACE_CELL.BERRY); level.setMeta(x, y, 0); continue; }
       }
+    }
+    /**
+     * Kennzahlen gleich setzen. Vorher standen sie bis zum ersten
+     * Nachwachs-Durchlauf auf null – eine frisch erzeugte Welt behauptete
+     * also, sie habe keine einzige Nahrungsquelle.
+     */
+    const r = this.reg.get(level.id);
+    if (r) {
+      this.stats.sources = r.count;
+      this.stats.total = this.totalOn(level);
     }
     return this;
   }

@@ -111,6 +111,14 @@ export function generateNestRock(level, rng, gen) {
   const seedStone = rng.int(1 << 30);
   const seedScatter = rng.int(1 << 30);
   const seedVariant = rng.int(1 << 30);
+  /**
+   * Der Variantenseed wird an der Ebene gemerkt. Die Variantenkarte ist
+   * eine reine Funktion von (x, y, seedVariant) und wird nie veraendert –
+   * deshalb muss sie nicht in den Speicherstand, sondern laesst sich dort
+   * aus dieser einen Zahl neu rechnen. Das spart je Welt mehrere hundert
+   * Kilobyte.
+   */
+  level.variantSeed = seedVariant;
   const surfRow = WORLD.NEST_SURFACE_ROW;
   const { w, h, cells, variant } = level;
 

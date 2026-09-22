@@ -18,7 +18,7 @@
 
 import {
   COLONY, TOOLS, DIG, LIMITS, NUTRITION, EVO, CREATURES, LIFE, BROOD as BROOD_CFG,
-  WORLD as W, mapPreset, GEN, COMBAT, FORTIFY, GODMODE, FOOD, DAYNIGHT,
+  WORLD as W, mapPreset, GEN, COMBAT, FORTIFY, GODMODE, FOOD, DAYNIGHT, BUILD,
 } from '../config.js';
 import { RNG } from '../rng.js';
 import { LevelManager, Level, LEVEL_KIND } from './levels.js';
@@ -41,12 +41,46 @@ import { BroodPool, broodSpot, STAGE } from './brood.js';
 import { Creatures, SPECIES_LIST, SPECIES_BY_KEY } from './creatures.js';
 import { Stability } from './stability.js';
 import { Combat } from './combat.js';
+import { Diplomacy } from './diplomacy.js';
+import { Structures } from './structures.js';
 import { INTERVENTION_BY_KEY, updateInterventions } from './interventions.js';
 import { initNutrition, updateNutrition } from './nutrition.js';
 import { saveWorld, loadWorld } from './save.js';
-import { newGenome, mutateGenome, geneSummary, copyGenome } from './genome.js';
+import { newGenome, mutateGenome, geneSummary, copyGenome, crossGenome } from './genome.js';
 import { timeOfDay, lightAt, phaseAt } from './daynight.js';
+import { rollAntTraits, rollQueenTraits, applyQueenTraits } from './traits.js';
 import { bus, CAT } from './events.js';
+
+/**
+ * Freie Zelle im Umkreis von (cx, cy) suchen.
+ *
+ * Stand dreimal fast gleich im Code (Ameisen, Kreaturen, Brut). Eine
+ * Funktion, drei Aufrufer – und der Radius ist jetzt an einer Stelle
+ * einstellbar statt an dreien.
+ *
+ * @returns {{x:number,y:number}|null}
+ */
+function freeSpotNear(level, rng, cx, cy, radius = 3.5, tries = 30) {
+  for (let t = 0; t < tries; t++) {
+    const a = rng.angle();
+    const r = rng.float() * radius;
+    const x = Math.round(cx + Math.cos(a) * r);
+    const y = Math.round(cy + Math.sin(a) * r);
+    if (!level.inBounds(x, y) || level.isSolid(x, y)) continue;
+    return { x, y };
+  }
+  return null;
+}
+
+/**
+ * Eigenschaften fuer eine neue Ameise als Spawn-Optionen.
+ * Eine eigene Funktion, weil an sechs Stellen gespawnt wird und die
+ * Aufrufe sonst auseinanderlaufen.
+ */
+function traitsFor(rng, colony) {
+  const t = rollAntTraits(rng, colony);
+  return { trait1: t[0], trait2: t[1] };
+}
 
 /** Hoechstzahl Anzeige-Effekte je Tick. */
 const W_FX_MAX = 96;
@@ -72,6 +106,8 @@ export class World {
     this.construction = new Construction(this);
     this.stability = new Stability(this);
     this.combat = new Combat(this);
+    this.diplomacy = new Diplomacy(this);
+    this.structures = new Structures(this);
     this.food = new FoodSystem(this);
     /** @type {PheromoneSystem|null} – nur fuer die Oberflaeche */
     this.phero = null;
@@ -95,7 +131,8 @@ export class World {
       world: this,
       portals: this.portals, levels: this.levels, colonies: this.colonies,
       construction: this.construction, fields: this.fields,
-      stability: this.stability, combat: this.combat,
+      stability: this.stability, combat: this.combat, diplomacy: this.diplomacy,
+      structures: this.structures,
       food: this.food, brood: this.brood, ants: this.ants, creatures: this.creatures,
       phero: null, rng: this.rngSim, tick: 0, light: 1,
     };
@@ -162,7 +199,15 @@ export class World {
     });
     colony.foundedTick = this.tick;
     colony.genome = opts.genome || newGenome(this.rngGen);
+    /**
+     * Charakter der Koenigin. Er wird GEWUERFELT, nicht vererbt: eine
+     * friedliche Mutter kann eine Kriegstreiberin hervorbringen. Das haelt
+     * die Voelker ueber Generationen verschieden, ohne dass der Spieler
+     * eingreifen muss.
+     */
+    applyQueenTraits(colony, opts.queenTraits || rollQueenTraits(this.rngGen));
     initNutrition(colony);
+    this.structures.initColony(colony);
     if (opts.maternal) {
       // Muetterlicher Effekt: die erste Generation erbt den halben Phaenotyp
       colony.pheno.size = 1 + (opts.maternal.size - 1) * EVO.MATERNAL_PHENO;
@@ -242,6 +287,7 @@ export class World {
         colonyId: colony.id, casteId: CASTE.QUEEN, dir: rng.angle(), state: ANT_STATE.IDLE,
         lifespan: LIFE.QUEEN_LIFESPAN,
         hungerTol: rng.float(),
+        ...traitsFor(rng, colony),
       });
       colony.queenAnt = q;
     }
@@ -256,6 +302,7 @@ export class World {
           levelId: nest.id, x: spot.x + 0.5, y: spot.y + 0.5, colonyId: colony.id,
           casteId: caste, dir: rng.angle(), state: ANT_STATE.EXPLORE,
           timer: rng.intRange(30, 400), lifespan: life, hungerTol: rng.float(),
+        ...traitsFor(rng, colony),
         });
       } else {
         const p = this.portals.ofColony(colony.id)[0];
@@ -265,6 +312,7 @@ export class World {
           levelId: surface.id, x: spot.x + 0.5, y: spot.y + 0.5, colonyId: colony.id,
           casteId: caste, dir: rng.angle(), state: ANT_STATE.EXPLORE,
           timer: rng.intRange(30, 900), lifespan: life, hungerTol: rng.float(),
+        ...traitsFor(rng, colony),
         });
       }
     }
@@ -482,6 +530,7 @@ export class World {
         levelId: surface.id, x: x + 0.5, y: y + 0.5, colonyId: colony.id,
         casteId: CASTE.ALATE, dir: rng.angle(), state: ANT_STATE.EXPLORE,
         timer: 65000, lifespan: 2400, hungerTol: rng.float(),
+        ...traitsFor(rng, colony),
       });
       if (id >= 0) this.ants.trip[id] = 0;
     }
@@ -518,6 +567,23 @@ export class World {
       const bias = EVO.BIAS_MODES[this.biasMode] !== undefined
         ? EVO.BIAS_MODES[this.biasMode] : EVO.BIAS_MODES.standard;
       const res = mutateGenome(mother.genome, pseudo, this.rngSim, bias);
+
+      /**
+       * PAARUNG. Findet sich eine Gefluegelte eines ANDEREN Volkes in der
+       * Naehe, mischen sich die Genome – das ist der eigentliche Sinn eines
+       * Hochzeitsflugs. Der Partner ist danach verbraucht und stirbt, wie
+       * es sich fuer ein Maennchen gehoert.
+       */
+      const mate = this._findMate(i, a, surface);
+      if (mate >= 0) {
+        const other = this.colonies.get(a.colony[mate]);
+        if (other && other.genome) {
+          res.genome = crossGenome(res.genome, other.genome);
+          res.changes.push({ key: 'Paarung mit ' + other.name, from: 0, to: 0 });
+        }
+        a.kill(mate);
+      }
+
       const child = this.foundColony({ x: a.x[i] | 0, y: a.y[i] | 0 }, 22, {
         genome: res.genome, parentId: mother.id, generation: mother.generation + 1,
         maternal: snap.pheno, changes: res.changes,
@@ -557,22 +623,16 @@ export class World {
     const rng = this.rngSim;
     let made = 0;
     for (let i = 0; i < n; i++) {
-      let px = -1, py = -1;
-      for (let t = 0; t < 30; t++) {
-        const a = rng.angle();
-        const r = rng.float() * 3.5;
-        const x = Math.round(cx + Math.cos(a) * r);
-        const y = Math.round(cy + Math.sin(a) * r);
-        if (!level.inBounds(x, y) || level.isSolid(x, y)) continue;
-        px = x; py = y; break;
-      }
-      if (px < 0) continue;
+      const spot = freeSpotNear(level, rng, cx, cy);
+      if (!spot) continue;
+      const px = spot.x, py = spot.y;
       const id = this.ants.spawn({
         levelId: level.id, x: px + 0.5, y: py + 0.5, colonyId: colony.id,
         casteId, dir: rng.angle(), state: ANT_STATE.EXPLORE,
         timer: rng.intRange(60, 600),
         lifespan: Math.round(LIFE.WORKER_LIFESPAN * rng.range(0.7, 1.3)),
         hungerTol: rng.float(),
+        ...traitsFor(rng, colony),
       });
       if (id >= 0) made++;
     }
@@ -587,16 +647,9 @@ export class World {
     const rng = this.rngSim;
     let made = 0;
     for (let i = 0; i < n; i++) {
-      let px = -1, py = -1;
-      for (let t = 0; t < 30; t++) {
-        const a = rng.angle();
-        const r = rng.float() * 3.5;
-        const x = Math.round(cx + Math.cos(a) * r);
-        const y = Math.round(cy + Math.sin(a) * r);
-        if (!level.inBounds(x, y) || level.isSolid(x, y)) continue;
-        px = x; py = y; break;
-      }
-      if (px < 0) continue;
+      const spot = freeSpotNear(level, rng, cx, cy);
+      if (!spot) continue;
+      const px = spot.x, py = spot.y;
       const id = this.creatures.spawn({
         speciesId: sp.id, levelId: level.id, x: px + 0.5, y: py + 0.5, dir: rng.angle(),
         gSize: clamp01(0.5 + rng.gauss(0, 0.12)),
@@ -620,14 +673,9 @@ export class World {
     const rng = this.rngSim;
     let made = 0;
     for (let k = 0; k < n; k++) {
-      let px = -1, py = -1;
-      for (let t = 0; t < 30; t++) {
-        const x = Math.round(cx + rng.range(-3.5, 3.5));
-        const y = Math.round(cy + rng.range(-3.5, 3.5));
-        if (!level.inBounds(x, y) || level.isSolid(x, y)) continue;
-        px = x; py = y; break;
-      }
-      if (px < 0) continue;
+      const spot = freeSpotNear(level, rng, cx, cy);
+      if (!spot) continue;
+      const px = spot.x, py = spot.y;
       const id = this.brood.spawn({
         colonyId: colony.id, levelId: level.id, x: px + 0.5, y: py + 0.5,
         target: casteId,
@@ -847,6 +895,22 @@ export class World {
     return { ok: true, world: w };
   }
 
+  /**
+   * Gefluegelte eines anderen Volkes in Paarungsreichweite.
+   * @returns {number} Index oder -1
+   */
+  _findMate(self, ants, surface) {
+    const cid = ants.colony[self];
+    const r = EVO.MATE_RADIUS;
+    let found = -1;
+    surface.spatial.query(ants.x[self], ants.y[self], r, (id) => {
+      if (found >= 0 || !ants.alive[id] || id === self) return;
+      if (ants.caste[id] !== CASTE.ALATE || ants.colony[id] === cid) return;
+      found = id;
+    });
+    return found;
+  }
+
   /** Forschungsmenue: Hochzeitsflug sofort ausloesen. */
   forceFlight(colonyId) {
     const c = this.colonies.get(colonyId);
@@ -902,6 +966,12 @@ export class World {
       if ((this.tick + colony.id * 3) % iv === 0) {
         updateNutrition(colony, this, iv);
         updateColonyAI(colony, this, iv);
+        this.structures.updateResearch(colony, iv);
+      }
+      // Bauwerke planen und Materialbedarf melden (eigener Takt)
+      this.structures.planBuildings(colony, this.ctx);
+      if ((this.tick + colony.id * 7) % BUILD.WANT_INTERVAL === 0) {
+        this.structures.updateWants(colony);
       }
       // Bedrohungslage und Reaktion darauf
       if ((this.tick + colony.id * 5) % COMBAT.THREAT_INTERVAL === 0) {
@@ -921,6 +991,7 @@ export class World {
         if (nest) this.construction.update(colony, nest, this.rngSim, this.tick);
       }
     }
+    this.structures.update(this.ctx);
     const t4 = now();
 
     // --- Distanzfelder ------------------------------------------------------
@@ -966,6 +1037,7 @@ export class World {
     // Pflanzen wachsen mit dem Licht: nachts langsam, tagsueber voll.
     // (Ganz abschalten war zu hart – das Oekosystem kippte im Test.)
     this.food.regrowVegetation(this.levels.surface, this.rngSim, this.tick, this.light);
+    this.diplomacy.update(this.tick, this.rngSim);
     updateInterventions(this);
     if (this.godMode === 'challenge' && this.energy < GODMODE.ENERGY_MAX) {
       this.energy = Math.min(GODMODE.ENERGY_MAX,

@@ -10,7 +10,9 @@
  */
 
 import { CASTE_DEFS } from '../sim/castes.js';
-import { NUTRIENT_NAMES, NUTRIENT_COLORS } from '../config.js';
+import { NUTRIENT_NAMES, NUTRIENT_COLORS, MATERIALS, RESEARCH_TREE } from '../config.js';
+import { TRAIT_LIST } from '../sim/traits.js';
+import { STANCE, STANCE_LABEL, STANCE_COLOR } from '../sim/diplomacy.js';
 
 export class ColonyPanel {
   constructor(el, world, sprites, game) {
@@ -25,7 +27,10 @@ export class ColonyPanel {
     const sig = this.world.colonies.colonies
       .map((c) => c.id + ':' + c.total + ':' + c.broodTotal + ':' + (c.alive ? 1 : 0)
         + ':' + [...c.populationByLevel.entries()].join(',') + ':' + c.threat
-        + ':' + (c.balanceArr ? Array.from(c.balanceArr).map((v) => v.toFixed(1)).join('') : ''))
+        + ':' + (c.balanceArr ? Array.from(c.balanceArr).map((v) => v.toFixed(1)).join('') : '')
+        + ':' + (c.researched ? c.researched.size : 0) + ':' + (c.structureCount || 0)
+        + ':' + Math.round(c.research || 0)
+        + ':' + (c.knownMaterials ? [...c.knownMaterials].map((k) => Math.round(c.stores[k] || 0)).join(',') : ''))
       .join('|');
     if (sig === this.signature) return;
     this.signature = sig;
@@ -45,6 +50,26 @@ export class ColonyPanel {
         if (c.nestLevelIds.length) this.game.gotoLevel(c.nestLevelIds[0]);
       });
       box.appendChild(head);
+
+      /**
+       * Charakter der Koenigin. Er erklaert das meiste am Verhalten eines
+       * Volkes und gehoert deshalb ganz nach oben, nicht in einen
+       * Unterpunkt.
+       */
+      if (c.queenTraits && c.queenTraits.length) {
+        const ch = document.createElement('div');
+        ch.className = 'queen-traits';
+        for (const id of c.queenTraits) {
+          const t = TRAIT_LIST[id];
+          if (!t) continue;
+          const chip = document.createElement('span');
+          chip.className = 'trait-chip trait-' + t.group;
+          chip.textContent = t.name;
+          chip.title = t.desc;
+          ch.appendChild(chip);
+        }
+        box.appendChild(ch);
+      }
 
       // Kasten mit Anzahl
       const castes = document.createElement('div');
@@ -109,6 +134,87 @@ export class ColonyPanel {
         stress.appendChild(sl);
         stress.appendChild(st);
         box.appendChild(stress);
+      }
+
+      /**
+       * Forschung, Bauwerke, Baustoffe und Diplomatie (Phase 11). Alles in
+       * einem Block, weil es zusammen gelesen wird: was kann das Volk, was
+       * hat es gebaut, mit wem liegt es im Streit.
+       */
+      if (c.researched) {
+        const next = this.world.structures.nextResearch(c);
+        const res = document.createElement('div');
+        res.className = 'bars';
+        const rl = document.createElement('span');
+        rl.className = 'bar-label';
+        rl.textContent = 'Forschung';
+        const rt = document.createElement('span');
+        rt.className = 'bar-track';
+        const rf = document.createElement('span');
+        rf.className = 'bar-fill';
+        rf.style.background = '#4f9ad8';
+        rf.style.width = next
+          ? Math.min(100, (c.research / next.cost) * 100) + '%' : '100%';
+        rt.appendChild(rf);
+        rt.title = next
+          ? 'Naechste Stufe: ' + next.name + ' (' + Math.round(c.research)
+            + '/' + next.cost + ') – ' + next.desc
+          : 'Alles erforscht';
+        res.appendChild(rl);
+        res.appendChild(rt);
+        const rv = document.createElement('span');
+        rv.className = 'nut-val';
+        rv.textContent = c.researched.size + '/' + RESEARCH_TREE.length;
+        res.appendChild(rv);
+        box.appendChild(res);
+
+        const mats = document.createElement('div');
+        mats.className = 'mat-row';
+        for (const m of MATERIALS) {
+          const have = Math.round(c.stores[m.key] || 0);
+          if (!have && !c.knownMaterials.has(m.key)) continue;
+          const chip = document.createElement('span');
+          chip.className = 'mat-chip';
+          chip.title = m.name + ' – ' + m.desc;
+          chip.innerHTML = '<i style="background:#' + m.color.toString(16).padStart(6, '0')
+            + '"></i>' + have;
+          mats.appendChild(chip);
+        }
+        if (mats.childElementCount) box.appendChild(mats);
+
+        const builds = this.world.structures.ofColony(c.id);
+        if (builds.length) {
+          const bl = document.createElement('div');
+          bl.className = 'mat-row';
+          const byKey = new Map();
+          for (const st of builds) {
+            const k = st.def.name + ' ' + 'I'.repeat(st.tier);
+            byKey.set(k, (byKey.get(k) || 0) + 1);
+          }
+          for (const [k, n] of byKey) {
+            const chip = document.createElement('span');
+            chip.className = 'build-chip';
+            chip.textContent = k + (n > 1 ? ' x' + n : '');
+            bl.appendChild(chip);
+          }
+          box.appendChild(bl);
+        }
+
+        const rel = document.createElement('div');
+        rel.className = 'mat-row';
+        for (const o of this.world.colonies.colonies) {
+          if (o.id === c.id || !o.alive) continue;
+          const st = this.world.diplomacy.stance(c.id, o.id);
+          if (st === STANCE.HOSTILE) continue;          // Ausgangslage, nicht der Rede wert
+          const chip = document.createElement('span');
+          chip.className = 'rel-chip';
+          chip.style.borderColor = STANCE_COLOR[st];
+          chip.style.color = STANCE_COLOR[st];
+          chip.textContent = STANCE_LABEL[st] + ': ' + o.name;
+          chip.title = 'Beziehung ' + this.world.diplomacy.get(c.id, o.id).toFixed(2);
+          rel.appendChild(chip);
+        }
+        if (rel.childElementCount) box.appendChild(rel);
       }
 
       // Verteilung auf die Ebenen

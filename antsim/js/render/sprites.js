@@ -31,7 +31,7 @@
  */
 
 import { PIXI } from './pixi.js';
-import { RENDER, CREATURES } from '../config.js';
+import { RENDER, CREATURES, STRUCTURES } from '../config.js';
 import { CASTE_DEFS } from '../sim/castes.js';
 
 // ---------------------------------------------------------------------------
@@ -39,6 +39,19 @@ import { CASTE_DEFS } from '../sim/castes.js';
 // Kein Antialiasing -> echte Pixel-Art.
 // ---------------------------------------------------------------------------
 const rgba = (r, g, b, a = 255) => (((a << 24) | (b << 16) | (g << 8) | r) >>> 0);
+
+/**
+ * Farben der Bauwerke. Stein, Holz, Harz – bewusst gedeckt, damit die
+ * Ameisen davor nicht untergehen.
+ */
+const STRUCT_PAL = {
+  turret:    { body: rgba(0x8e, 0x9a, 0x86), light: rgba(0xc2, 0xd2, 0xb4), dark: rgba(0x55, 0x60, 0x50) },
+  sling:     { body: rgba(0xa8, 0x7c, 0x3e), light: rgba(0xd9, 0xa4, 0x41), dark: rgba(0x5e, 0x45, 0x22) },
+  guardpost: { body: rgba(0x9a, 0x8d, 0x7e), light: rgba(0xd0, 0xc4, 0xb2), dark: rgba(0x56, 0x4c, 0x42) },
+  granary:   { body: rgba(0xb5, 0x9a, 0x6c), light: rgba(0xe2, 0xcf, 0xa8), dark: rgba(0x6a, 0x58, 0x3a) },
+  incubator: { body: rgba(0xc0, 0x9d, 0x62), light: rgba(0xf0, 0xdc, 0x9a), dark: rgba(0x70, 0x5a, 0x33) },
+  workshop:  { body: rgba(0x7d, 0x8b, 0x9a), light: rgba(0xb4, 0xc6, 0xd6), dark: rgba(0x45, 0x4f, 0x5a) },
+};
 
 const PAL = {
   body: rgba(0xd4, 0xd4, 0xd4),
@@ -97,6 +110,15 @@ export class Cell {
     const steps = Math.max(Math.abs(dx), Math.abs(dy), 1);
     for (let i = 0; i <= steps; i++) {
       this.plot(x0 + (dx * i) / steps, y0 + (dy * i) / steps, c);
+    }
+  }
+
+  /** Achsenparalleles Rechteck (fuer Bauwerke). */
+  rect(x, y, w, h, c) {
+    const x0 = Math.round(x), y0 = Math.round(y);
+    const x1 = Math.round(x + w), y1 = Math.round(y + h);
+    for (let py = y0; py < y1; py++) {
+      for (let px = x0; px < x1; px++) this.plot(px, py, c);
     }
   }
 
@@ -320,6 +342,81 @@ export function drawBrood(cell, stage) {
   cell.outline(PAL.outline);
 }
 
+/**
+ * Bauwerke (Phase 11). Drei Einzelbilder je Art – eines je Stufe – damit
+ * man auf einen Blick sieht, wie weit ein Volk ist. Gezeichnet wird in
+ * Graustufen und spaeter mit der Koloniefarbe getoent, genau wie bei den
+ * Ameisen; so passt jedes Bauwerk automatisch zu seinem Volk.
+ */
+export function drawStructure(cell, key, tier) {
+  const w = cell.w, h = cell.h;
+  const cx = w / 2;
+  const base = h * 0.82;
+  const t = tier + 1;                       // 1..3
+  /**
+   * Bauwerke bekommen EIGENE Farben statt der Koloniefarbe. Der erste
+   * Versuch hat sie wie die Ameisen eingefaerbt – dann standen dort nur
+   * rote Kloetze, die man weder voneinander noch von den Tieren
+   * unterscheiden konnte. Die Zugehoerigkeit zeigt stattdessen eine kleine
+   * Fahne, die der Renderer darueber setzt.
+   */
+  const P = STRUCT_PAL[key] || STRUCT_PAL.turret;
+
+  // Sockel: waechst mit der Stufe
+  const bw = w * (0.30 + t * 0.06);
+  cell.rect(cx - bw, base - h * 0.10, bw * 2, h * 0.12, P.dark);
+  cell.rect(cx - bw + 1, base - h * 0.09, bw * 2 - 2, h * 0.05, P.body);
+
+  if (key === 'turret') {
+    // Saeurespeier: Kegel mit Duese, Rohr laenger je Stufe
+    const bh = h * (0.16 + t * 0.09);
+    for (let k = 0; k < 5; k++) {
+      const y = base - h * 0.10 - (bh * k) / 5;
+      const ww = bw * (1 - k / 6);
+      cell.rect(cx - ww, y - bh / 5, ww * 2, bh / 5 + 1, k % 2 ? P.body : P.light);
+    }
+    const ty = base - h * 0.10 - bh;
+    cell.rect(cx - w * 0.05, ty - h * (0.06 + t * 0.045), w * 0.10, h * (0.06 + t * 0.045), P.light);
+    cell.ellipse(cx, ty - h * (0.06 + t * 0.045), w * 0.07, h * 0.05, P.body);
+  } else if (key === 'sling') {
+    // Harzschleuder: Wippe auf einem Bock
+    cell.rect(cx - w * 0.04, base - h * 0.34, w * 0.08, h * 0.24, P.body);
+    cell.line(cx - w * 0.26, base - h * 0.20, cx + w * 0.24, base - h * (0.38 + t * 0.03), P.light);
+    cell.ellipse(cx + w * 0.24, base - h * (0.38 + t * 0.03), w * 0.07, h * 0.06, P.light);
+    cell.line(cx - w * 0.16, base - h * 0.10, cx, base - h * 0.32, P.dark);
+    cell.line(cx + w * 0.16, base - h * 0.10, cx, base - h * 0.32, P.dark);
+  } else if (key === 'guardpost') {
+    // Wachposten: Turm mit Zinnen, mehr Zinnen je Stufe
+    const th = h * (0.24 + t * 0.10);
+    cell.rect(cx - w * 0.20, base - h * 0.10 - th, w * 0.40, th, P.body);
+    cell.rect(cx - w * 0.20, base - h * 0.10 - th, w * 0.40, h * 0.05, P.light);
+    const n = 1 + t;
+    for (let k = 0; k < n; k++) {
+      const x = cx - w * 0.20 + (w * 0.40 * (k + 0.5)) / n;
+      cell.rect(x - w * 0.035, base - h * 0.12 - th - h * 0.07, w * 0.07, h * 0.07, P.light);
+    }
+  } else if (key === 'granary') {
+    // Speicher: bauchiger Krug
+    const gh = h * (0.22 + t * 0.07);
+    cell.ellipse(cx, base - h * 0.10 - gh / 2, w * (0.16 + t * 0.04), gh / 2, P.body);
+    cell.rect(cx - w * 0.08, base - h * 0.10 - gh - h * 0.06, w * 0.16, h * 0.07, P.light);
+  } else if (key === 'incubator') {
+    // Brutstube: Kuppel mit Eiern darin
+    const rh = h * (0.18 + t * 0.06);
+    cell.ellipse(cx, base - h * 0.10 - rh * 0.4, w * 0.26, rh, P.body);
+    for (let k = 0; k < t; k++) {
+      cell.ellipse(cx + (k - (t - 1) / 2) * w * 0.12, base - h * 0.16, w * 0.045, h * 0.035, P.light);
+    }
+  } else {
+    // Werkstatt: Amboss unter einem Dach
+    cell.line(cx - w * 0.28, base - h * 0.34, cx, base - h * (0.46 + t * 0.03), P.light);
+    cell.line(cx + w * 0.28, base - h * 0.34, cx, base - h * (0.46 + t * 0.03), P.light);
+    cell.rect(cx - w * 0.16, base - h * 0.24, w * 0.32, h * 0.07, P.body);
+    cell.rect(cx - w * 0.05, base - h * 0.17, w * 0.10, h * 0.07, P.dark);
+  }
+  cell.outline(P.outline || PAL.outline);
+}
+
 /** Markierungs-Sprite fuer Nesteingaenge (wird mit Koloniefarbe getoent). */
 function drawEntranceMarker(cell) {
   const cx = cell.w / 2, cy = cell.h / 2;
@@ -369,6 +466,14 @@ export function defaultManifest() {
       scale: 1.0,
       animations: { walk: { from: 0, to: RENDER.WALK_FRAMES - 1, fps: 12, loop: true } },
     };
+  }
+  for (const sd of STRUCTURES) {
+    for (let tier = 1; tier <= sd.tiers.length; tier++) {
+      sprites['struct_' + sd.key + '_' + tier] = {
+        file: null, frameWidth: RENDER.SPRITE_PX, frameHeight: RENDER.SPRITE_PX,
+        frames: 1, anchor: [0.5, 0.5], scale: 1.0, animations: {},
+      };
+    }
   }
   for (const st of ['egg', 'larva', 'pupa']) {
     sprites['brood_' + st] = {
@@ -465,6 +570,9 @@ export class SpriteBank {
         else if (key.startsWith('creature_')) {
           const sp = CREATURES.SPECIES.find((c) => c.key === key.slice(9));
           if (sp && sp.art) drawCreature(cell, sp.art, f, frames);
+        } else if (key.startsWith('struct_')) {
+          const [, sk, tier] = key.split('_');
+          drawStructure(cell, sk, Number(tier) - 1);
         } else if (key.startsWith('brood_')) {
           drawBrood(cell, key === 'brood_egg' ? 0 : (key === 'brood_larva' ? 1 : 2));
         } else {

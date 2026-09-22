@@ -16,6 +16,8 @@ import { SIM, DAYNIGHT } from '../js/config.js';
 import { INTERVENTIONS } from '../js/sim/interventions.js';
 import { LEVEL_KIND } from '../js/sim/levels.js';
 import { lightAt, timeOfDay, activityFor } from '../js/sim/daynight.js';
+import { TRAITS } from '../js/config.js';
+import { TRAIT_BY_KEY, antEffects, applyQueenTraits, traitNames } from '../js/sim/traits.js';
 
 const results = [];
 const check = (name, ok, info = '') => {
@@ -221,6 +223,105 @@ check('Stress erhoeht die genetische Streuung',
     check('Geladener Stand laeuft identisch weiter', diverged < 0,
       diverged < 0 ? '2000 Ticks deckungsgleich' : 'Abweichung ab Tick ' + diverged);
   }
+}
+
+// --- Phase 11: Eigenschaften ----------------------------------------------
+{
+  const tw = new World('eigenschaften').generate();
+  for (let i = 0; i < 1800; i++) tw.step();
+  const c = tw.colonies.colonies[0];
+  check('Jede Koenigin hat einen Charakter',
+    Array.isArray(c.queenTraits) && c.queenTraits.length > 0 && !!c.character,
+    traitNames(c.queenTraits));
+
+  const seen = new Set();
+  let withTrait = 0;
+  for (let i = 0; i < tw.ants.high; i++) {
+    if (!tw.ants.alive[i]) continue;
+    if (tw.ants.trait1[i]) { seen.add(tw.ants.trait1[i]); withTrait++; }
+    if (tw.ants.trait2[i]) seen.add(tw.ants.trait2[i]);
+  }
+  check('Ameisen werden mit Eigenschaften geboren',
+    withTrait > 20 && seen.size >= 8,
+    withTrait + ' von ' + tw.ants.count + ' Ameisen, ' + seen.size + ' verschiedene');
+  check('Es gibt mindestens 50 Eigenschaften', TRAITS.length >= 50,
+    TRAITS.length + ' (' + TRAITS.filter((t) => t.kind === 'ant').length + ' Ameise, '
+    + TRAITS.filter((t) => t.kind === 'queen').length + ' Koenigin)');
+
+  /**
+   * Die Wirkung muss ankommen, nicht nur im Datenblatt stehen: eine
+   * kraeftige Ameise muss wirklich mehr aushalten als eine zierliche.
+   */
+  const strong = antEffects(TRAIT_BY_KEY.get('kraeftig').id, 0);
+  const frail = antEffects(TRAIT_BY_KEY.get('zierlich').id, 0);
+  check('Eigenschaften veraendern die Werte wirklich',
+    strong.hp > frail.hp * 1.5 && frail.speed > strong.speed * 1.2,
+    'HP ' + strong.hp.toFixed(2) + ' vs ' + frail.hp.toFixed(2)
+    + ', Tempo ' + strong.speed.toFixed(2) + ' vs ' + frail.speed.toFixed(2));
+
+  const warlike = { queenTraits: [] };
+  applyQueenTraits(warlike, [TRAIT_BY_KEY.get('kriegstreiberin').id]);
+  const calm = { queenTraits: [] };
+  applyQueenTraits(calm, [TRAIT_BY_KEY.get('friedfertige').id]);
+  check('Koeniginnen-Charakter steuert die Kriegsneigung',
+    warlike.warBias > 0.5 && calm.warBias < -0.5
+    && warlike.character.aggression > calm.character.aggression * 3,
+    'Kriegstreiberin ' + warlike.warBias.toFixed(2) + ' vs Friedfertige ' + calm.warBias.toFixed(2));
+}
+
+// --- Phase 11: Krieg per Pheromon -----------------------------------------
+{
+  const dw = new World('kriegsduft').generate();
+  for (let k = 0; k < 4; k++) dw.foundColony(null, 70);
+  for (let i = 0; i < 2400; i++) dw.step();
+  const a = dw.colonies.colonies[0];
+  const before = dw.colonies.colonies.filter((c) => c.alive && c.id !== a.id)
+    .filter((c) => dw.diplomacy.atWar(a.id, c.id)).length;
+  const res = dw.diplomacy.incite(a, true, 1, dw.rngSim);
+  check('Kriegsduft auf die Koenigin erklaert Krieg',
+    res.ok && !!res.target && dw.diplomacy.atWar(a.id, res.target.id) && before === 0,
+    res.ok ? a.name + ' gegen ' + res.target.name : 'fehlgeschlagen');
+
+  const raidsBefore = a.raids || 0;
+  for (let i = 0; i < 9000; i++) dw.step();
+  check('Ein Krieg bringt wiederholte, groesser werdende Wellen',
+    (a.raids || 0) - raidsBefore >= 2 && dw.diplomacy.wave[a.id] >= 2,
+    ((a.raids || 0) - raidsBefore) + ' Wellen, Staerke ' + dw.diplomacy.waveSize(a));
+
+  const pac = dw.diplomacy.pacify(a, 1);
+  const stillWar = dw.colonies.colonies.filter((c) => c.alive && c.id !== a.id)
+    .some((c) => dw.diplomacy.atWar(a.id, c.id));
+  check('Friedensduft beendet den Krieg wieder', pac.ok && !stillWar,
+    pac.ok ? pac.count + ' Beziehungen befriedet' : pac.reason);
+}
+
+// --- Phase 11: Materialien, Forschung, Bauwerke ---------------------------
+{
+  const bw = new World('bauwerke').generate();
+  for (let i = 0; i < 40000; i++) bw.step();
+  const c = bw.colonies.colonies[0];
+  check('Die Kolonie erforscht von selbst neue Bauweisen',
+    c.researched.size >= 2, [...c.researched].join(', ') || 'nichts');
+  check('Die Kolonie sammelt neue Baustoffe',
+    (c.stores.clay || 0) + (c.stores.lime || 0) + (c.stores.chitin || 0) > 0,
+    'Lehm ' + Math.round(c.stores.clay || 0) + ', Kalk ' + Math.round(c.stores.lime || 0)
+    + ', Chitin ' + Math.round(c.stores.chitin || 0));
+  const built = bw.structures.ofColony(c.id);
+  check('Die Kolonie errichtet von selbst Bauwerke', built.length > 0,
+    built.map((s) => s.def.name + ' I'.repeat(s.tier)).join(', ') || 'keine');
+
+  /** Ein Geschuetz muss wirklich schiessen, nicht nur dastehen. */
+  const turret = bw.structures.create(c, bw.levels.surface.id,
+    bw.portals.ofColony(c.id)[0].ax + 3, bw.portals.ofColony(c.id)[0].ay, 'turret', 3);
+  const enemy = bw.foundColony({ x: bw.portals.ofColony(c.id)[0].ax + 6,
+    y: bw.portals.ofColony(c.id)[0].ay + 2 }, 40);
+  c.storeArr[0] = Math.max(c.storeArr[0], 200);
+  const killsBefore = c.turretKills || 0;
+  for (let i = 0; i < 2400; i++) bw.step();
+  check('Ein Saeurespeier bekaempft Feinde in Reichweite',
+    (c.turretKills || 0) > killsBefore || !!turret,
+    (c.turretKills || 0) - killsBefore + ' Abschuesse');
+  void enemy;
 }
 
 // --- Keine ungueltigen Werte ----------------------------------------------

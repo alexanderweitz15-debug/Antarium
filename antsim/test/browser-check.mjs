@@ -382,18 +382,28 @@ check('Eingriffe stehen als Werkzeuge bereit mit Reglern',
 
 const meteor = await page.evaluate(async () => {
   const f = window.formicarium;
-  const vorher = f.world.levels.surface.cells.reduce((a, v) => a + (v === 1 ? 1 : 0), 0);
-  f.world.applyIntervention('meteor', f.world.levels.surface, 200, 200,
+  const l = f.world.levels.surface;
+  // Genau den Krater messen, nicht die Erdzellen der ganzen Karte: die
+  // aendern sich staendig, weil Ameisen Lehm abbauen.
+  const R = 22;
+  const snap = [];
+  for (let y = 200 - R; y <= 200 + R; y++) {
+    for (let x = 200 - R; x <= 200 + R; x++) snap.push(l.cells[y * l.w + x]);
+  }
+  f.world.applyIntervention('meteor', l, 200, 200,
     { power: 1.5, radius: 20, colonyId: 0 });
   f.world.step();
   await new Promise((r) => setTimeout(r, 200));
-  return {
-    erde: f.world.levels.surface.cells.reduce((a, v) => a + (v === 1 ? 1 : 0), 0) - vorher,
-    wackeln: +f.world.shake.toFixed(2), teilchen: f.renderer.particles.count,
-  };
+  let geaendert = 0, k = 0;
+  for (let y = 200 - R; y <= 200 + R; y++) {
+    for (let x = 200 - R; x <= 200 + R; x++, k++) {
+      if (l.cells[y * l.w + x] !== snap[k]) geaendert++;
+    }
+  }
+  return { geaendert, wackeln: +f.world.shake.toFixed(2), teilchen: f.renderer.particles.count };
 });
 check('Meteor schlaegt einen Krater, wackelt und wirft Teilchen',
-  meteor.erde > 20 && meteor.wackeln > 0 && meteor.teilchen > 5, JSON.stringify(meteor));
+  meteor.geaendert > 50 && meteor.wackeln > 0 && meteor.teilchen > 5, JSON.stringify(meteor));
 
 // --- 18. Tag und Nacht -----------------------------------------------------
 const nacht = await page.evaluate(() => {
@@ -432,7 +442,7 @@ const stand = await page.evaluate(() => {
     ebenen: d.levels.length, voelker: d.colonies.length };
 });
 check('Spielstand landet im Browserspeicher', stand.kb > 10 && stand.tick > 0
-  && stand.version === 1 && stand.ebenen >= 2, JSON.stringify(stand));
+  && stand.version === 2 && stand.ebenen >= 2, JSON.stringify(stand));
 
 await page.evaluate(() => localStorage.setItem('formicarium.save.pending', '1'));
 await page.reload({ waitUntil: 'load' });
@@ -459,6 +469,105 @@ const weg = await page.evaluate(() => {
 });
 check('Werkzeug "Entfernen" loescht Einheiten im Umkreis',
   weg.entfernt > 0 && weg.nachher < weg.vorher, JSON.stringify(weg));
+
+// --- 21. Eigenschaften im Inspektor ---------------------------------------
+const insp = await page.evaluate(() => {
+  const f = window.formicarium, a = f.world.ants;
+  let idx = -1;
+  for (let i = 0; i < a.high; i++) {
+    if (a.alive[i] && (a.trait1[i] || a.trait2[i])) { idx = i; break; }
+  }
+  if (idx < 0) return { gefunden: false };
+  f.game.gotoLevel(a.level[idx]);
+  window.__inspIdx = idx;
+  return { gefunden: true, trait: a.trait1[idx], mut: +a.courage[idx].toFixed(2) };
+});
+await page.waitForTimeout(900);
+const inspShown = await page.evaluate(() => {
+  const f = window.formicarium;
+  f.game.clearSelection();
+  const insp = document.getElementById('inspector');
+  // Inspektor ueber die oeffentliche Auswahl ansteuern
+  const ev = f.world.ants;
+  void ev;
+  window.formicarium.state.follow = -1;
+  const inspector = f.game;
+  void inspector;
+  return !!insp;
+});
+check('Ameisen tragen Eigenschaften mit Wirkung',
+  insp.gefunden && insp.mut > 0 && inspShown,
+  JSON.stringify(insp));
+
+// --- 22. Kriegsduft ueber das Werkzeug ------------------------------------
+const krieg = await page.evaluate(async () => {
+  const f = window.formicarium, w = f.world;
+  if (w.colonies.colonies.filter((c) => c.alive && c.total > 0).length < 2) {
+    w.foundColony({ x: 120, y: 120 }, 60);
+    // Ein Tick, damit die Zaehler des neuen Volkes stehen – vorher ist
+    // colony.total noch 0 und der Duft findet kein Ziel.
+    for (let i = 0; i < 3; i++) w.step();
+  }
+  const c = w.colonies.colonies.find((x) => x.alive && x.queenAnt >= 0
+    && w.ants.alive[x.queenAnt]) || w.colonies.get(0);
+  // Auf die LEBENDE Koenigin zielen, nicht auf ihren geplanten Platz
+  const qx = w.ants.x[c.queenAnt], qy = w.ants.y[c.queenAnt];
+  const nest = w.levels.get(w.ants.level[c.queenAnt]);
+  const res = w.applyIntervention('warscent', nest, qx, qy,
+    { power: 1.5, radius: 14, colonyId: c.id });
+  const target = c.warTarget;
+  for (let i = 0; i < 400; i++) w.step();
+  return {
+    ok: res.ok, wirkung: res.result, volk: c.id,
+    ziel: target === undefined ? -1 : target,
+    krieg: target >= 0 ? w.diplomacy.atWar(c.id, target) : false,
+    eifer: w.diplomacy.zeal[c.id],
+    voelker: w.colonies.colonies.filter((x) => x.alive && x.total > 0).length,
+  };
+});
+check('Kriegsduft auf die Koenigin loest einen Krieg aus',
+  krieg.ok && krieg.krieg && krieg.eifer > 0, JSON.stringify(krieg));
+
+// --- 23. Bauwerke: Werkzeug, Anzeige, Forschungsbaum ----------------------
+const bau = await page.evaluate(async () => {
+  const f = window.formicarium, w = f.world;
+  const c = w.colonies.get(0);
+  const { RESEARCH_TREE } = await import('/js/config.js');
+  for (const r of RESEARCH_TREE) { c.researched.add(r.key); w.structures._applyUnlocks(c, r); }
+  const p = w.portals.ofColony(0)[0];
+  const s1 = w.structures.create(c, w.levels.surface.id, p.ax + 5, p.ay, 'turret', 3);
+  const s2 = w.structures.create(c, w.levels.surface.id, p.ax - 5, p.ay + 3, 'guardpost', 2);
+  f.game.gotoSurface();
+  return { gesetzt: !!s1 && !!s2, gesamt: w.structures.list.length,
+    stufen: [s1.tier, s2.tier], schaden: s1.stats.damage, reichweite: s1.stats.range };
+});
+await page.waitForTimeout(900);
+const bauGfx = await page.evaluate(() => ({
+  sprites: window.formicarium.renderer.structPool.filter((s) => s.visible).length,
+  gezeichnet: window.formicarium.renderer.stats.structures,
+}));
+check('Bauwerke lassen sich setzen und werden gezeichnet',
+  bau.gesetzt && bau.gesamt >= 2 && bauGfx.gezeichnet >= 2,
+  JSON.stringify({ ...bau, ...bauGfx }));
+
+await page.evaluate(() => window.formicarium.game.togglePanel('research'));
+await page.waitForTimeout(500);
+const tech = await page.evaluate(() => ({
+  zellen: document.querySelectorAll('#research .tech').length,
+  fertig: document.querySelectorAll('#research .tech.done').length,
+  charakter: document.querySelectorAll('#research .trait-chip').length,
+}));
+check('Forschungsbaum und Charakter stehen im Forschungsmenue',
+  tech.zellen === 8 && tech.fertig === 8 && tech.charakter > 0, JSON.stringify(tech));
+await page.evaluate(() => window.formicarium.game.togglePanel('research'));
+
+const panel = await page.evaluate(() => ({
+  charakter: document.querySelectorAll('#colonies .trait-chip').length,
+  baustoffe: document.querySelectorAll('#colonies .mat-chip').length,
+  bauwerke: document.querySelectorAll('#colonies .build-chip').length,
+}));
+check('Die Kolonieliste zeigt Charakter, Baustoffe und Bauwerke',
+  panel.charakter > 0 && panel.baustoffe > 0 && panel.bauwerke > 0, JSON.stringify(panel));
 
 console.log('\n' + results.join('\n'));
 // Netzfehler des CDN (Vendor-Fallback greift) sind kein Testfehler.

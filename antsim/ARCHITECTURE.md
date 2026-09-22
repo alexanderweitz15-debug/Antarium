@@ -3,8 +3,9 @@
 2D-Sandbox-Insekten-OEkosystem im Browser. PixiJS v8 fuer das Rendering,
 Vanilla-ES6-Module fuer die Simulation, kein Build-Tool.
 
-**Stand: alle zehn Phasen umgesetzt** (Version 1.0.0). Einzelne Restpunkte
-und bewusste Vereinfachungen stehen in den Abschnitten 12 und 13.
+**Stand: alle zehn Phasen plus Phase 11 umgesetzt** (Version 1.1.0).
+Einzelne Restpunkte und bewusste Vereinfachungen stehen in den
+Abschnitten 12 und 13.
 
 Kurz: Ameisen suchen ueber Pheromone Futter und bilden ohne jedes Scripting
 Ameisenstrassen, tragen Nahrung mit Naehrstoffprofilen ein, ziehen Brut auf,
@@ -13,8 +14,13 @@ Kreaturenarten bejagt oder beim Futter verdraengt, schwaermen aus und
 gruenden Toechter mit mutiertem Genom. Die Ernaehrung bestimmt Phaenotyp
 und Mutationsstaerke. Ein Tag-Nacht-Zyklus verschiebt laufend, wer gerade
 aktiv ist. Der Spieler gestaltet Welt und Voelker ueber eine
-Werkzeugleiste mit 24 goettlichen Eingriffen und kann jeden Stand
+Werkzeugleiste mit 27 goettlichen Eingriffen und kann jeden Stand
 speichern und bitgenau fortsetzen.
+
+Seit Phase 11 hat jede Koenigin einen CHARAKTER und jede Ameise
+EIGENSCHAFTEN (61 Stueck), die Voelker unterhalten BEZIEHUNGEN von Krieg
+bis Buendnis, und sie erforschen im Spiel MATERIALIEN und BAUWERKE –
+darunter Geschuetze in drei Stufen.
 
 ---
 
@@ -83,6 +89,9 @@ js/sim/  (kennt WEDER PixiJS NOCH das DOM – laeuft auch headless unter Node)
   stability.js    Deckenspannen, Einstuerze, Erdbeben, Pfeilerplaetze
   interventions.js Tabelle aller goettlichen Eingriffe + laufende Wirkungen
   daynight.js     Tageszeit, Helligkeit, Aktivitaetsfaktoren je Art
+  traits.js       Eigenschaften von Ameisen und Koeniginnen (Phase 11)
+  diplomacy.js    Beziehungen der Voelker, Kriegsduft, Wellenstaerke
+  structures.js   Materialien, Bauwerke, Forschungsbaum
   save.js         Speichern und Laden (RLE + Base64, bitgenau fortsetzbar)
   fx.js           Kennungen der Anzeige-Effekte (Teilchen), ohne Render-Bezug
   levels.js       Level, LevelManager, Chunk-Dirty-Verwaltung, Kamerazustand
@@ -815,6 +824,143 @@ ohne Tagesrhythmus besser vergleichbar sind.
 
 ---
 
+## 8n. Eigenschaften: Charakter von Koenigin und Ameise (Phase 11)
+
+`sim/traits.js`, Daten in `TRAITS` (61 Eintraege: 41 fuer Ameisen, 20 fuer
+Koeniginnen).
+
+**Abgrenzung zu den Genen.** Gene gehoeren der KOLONIE, vererben und
+mutieren sich ueber Generationen. Eigenschaften gehoeren dem EINZELTIER,
+werden bei der Geburt gewuerfelt und aendern sich nie. Ein genetisch
+friedliches Volk kann einzelne jaehzornige Ameisen hervorbringen.
+
+**Wie die Wirkung ankommt.** Zahlenwerte (Tempo, Trefferpunkte, Grabtempo,
+Tragfaehigkeit, Sicht, Spurtreue, Brutpflege, Kampfkraft) werden EINMAL bei
+der Geburt in die Spalten der Ameisentabelle eingerechnet. Im Tick kostet
+das nichts mehr. Verhalten (flieht nie, greift von selbst an, nachtaktiv,
+giftig, platzt im Tod) braucht eine Abfrage zur Laufzeit und steckt in
+einer Bitmaske `ants.traitBits`; eine Pruefung ist ein einzelnes UND.
+
+Eine Ameise hat hoechstens zwei Eigenschaften, eine Koenigin bis zu drei,
+und sich widersprechende Paare (tapfer/feige) schliessen sich aus.
+
+Der Charakter der Koenigin wird in Koloniewerte umgerechnet
+(`colony.character`): Eierrate, Soldatenanteil, Aggression, Expansion,
+Bautrieb, Wellenstaerke, Forschung, Verteidigung, Handel – plus
+`colony.warBias`, die Kriegsneigung. Er wird GEWUERFELT, nicht vererbt:
+eine friedliche Mutter kann eine Kriegstreiberin hervorbringen. Das haelt
+die Voelker ueber Generationen verschieden.
+
+Im Forschungsmenue laesst sich der Charakter ansehen, einzeln umschalten
+und neu wuerfeln – das ist der schnellste Weg, den Unterschied zwischen
+einer Blutruenstigen und einer Friedfertigen zu erleben.
+
+---
+
+## 8o. Beziehungen und Krieg per Pheromon (Phase 11)
+
+`sim/diplomacy.js`. Jedes Paar von Voelkern hat einen Wert von -1 bis +1:
+
+| Wert | Haltung | Verhalten |
+|---|---|---|
+| bis -0.35 | **Krieg** | greift an, ohne zu rechnen; auch kleine Voelker |
+| bis 0.15 | Feindselig | raubt, wenn es sich lohnt (Ausgangslage) |
+| bis 0.5 | Frieden | greift nicht an |
+| darueber | **Buendnis** | greift einander nie an |
+
+Der Wert bewegt sich von selbst: jeder Verlust durch den anderen drueckt
+ihn, Zeit ohne Zwischenfall hebt ihn. Die Ruhelage ist der gespiegelte
+Mittelwert der Kriegsneigung beider Koeniginnen – zwei Friedfertige treiben
+Richtung Buendnis, eine Blutruenstige zieht jede Beziehung nach unten.
+
+**Kriegsduft.** Das Werkzeug wirkt nur ueber die KOENIGIN. Trifft es sie,
+erklaert ihr Volk einem Nachbarn den Krieg und schickt von da an in
+kuerzeren Abstaenden immer groessere Wellen (`WAVE_BASE` mal
+`WAVE_GROWTH` je Welle, gedeckelt bei `RAID_MAX_SHARE` des Volkes).
+Trifft der Duft nur Arbeiterinnen, macht er sie eine Weile angriffslustig
+– aber kein Volk fuehrt Krieg, weil ein paar Sammlerinnen gereizt sind.
+Damit das nicht zur Zielübung wird, gilt in der eigenen Nest-Ebene ein
+grosszuegigerer Radius (`GODMODE.QUEEN_SCENT_SLACK`).
+
+Dazu **Friedensduft** (beendet alle Feindschaften, wirkungslos bei einer
+blutruenstigen Koenigin) und **Buendnisduft**.
+
+Aggressive Koeniginnen erklaeren auch von selbst Krieg
+(`DIPLO.SELF_WAR_CHANCE` mal Kriegsneigung mal Aggression).
+
+---
+
+## 8p. Materialien, Bauwerke und Forschung (Phase 11)
+
+`sim/structures.js`, Daten in `MATERIALS`, `STRUCTURES`, `RESEARCH_TREE`.
+
+**Fuenf Materialien.** Kiesel und Harz gab es schon; dazu kommen Lehm (aus
+dem feuchten Saum um Wasser und aus tiefer Erde beim Graben), Kalk (aus
+Stein geschlagen) und Chitin (von erlegten Tieren). Materialien werden
+erst gesammelt, wenn die Kolonie sie kennt – vorher laeuft eine Ameise an
+Lehm vorbei, ohne zu wissen, was sie damit soll.
+
+**Sechs Bauwerke in je drei Stufen.** Anders als eine Befestigungszelle ist
+ein Bauwerk ein Eintrag mit Zustand (Stufe, Trefferpunkte, Ladezeit):
+
+| Bauwerk | Wirkung |
+|---|---|
+| Saeurespeier | schiesst auf Feinde und Raeuber in Reichweite, kostet Vorrat je Schuss |
+| Harzschleuder | wenig Schaden, verklebt Feinde (Tempo runter) |
+| Wachposten | eigene Kaempferinnen in Reichweite schlagen haerter zu |
+| Speicherbau | vergroessert das Lager der Kolonie |
+| Brutstube | Brut in Reichweite reift schneller |
+| Werkstatt | beschleunigt die Forschung, senkt die Baukosten |
+
+**Forschung ohne Knopf.** Punkte entstehen aus eingetragener Nahrung, aus
+fertigen Bauten und aus der Werkstatt – das Volk lernt, weil es arbeitet.
+Acht Stufen mit Vorbedingungen; jede schaltet Materialien und Bauwerks-
+stufen frei. Im Forschungsmenue ist der Baum sichtbar und einzeln
+freischaltbar (Sandkasten).
+
+**Wie ein Bauwerk entsteht:** die Kolonie plant einen Auftrag (immer nur
+einen), Ameisen im Zustand BUILD tragen Arbeit bei, beim Abschluss wird
+das Material abgebucht. Fehlt es, faellt der Auftrag nach
+`BUILD.MAX_STALLS` Versuchen heraus – im ersten Anlauf lief eine
+unbezahlbare Baustelle endlos auf 85 Prozent und band immer mehr Ameisen,
+bis das Volk verhungerte.
+
+Fehlendes Material wird gezielt geholt: `updateWants` sucht die naechste
+Fundstelle und ein kleiner Teil der Sammlerinnen zieht dorthin. Passives
+Aufsammeln reichte nicht – im Test standen von 316 Ameisen NULL im
+Lehmguertel, weil Sammlerinnen den Nahrungsspuren folgen und die verlaufen
+woanders.
+
+---
+
+## 8q. Massentest (test/fuzz.mjs)
+
+```bash
+node test/fuzz.mjs 1000 20000            # 1000 Welten, je 11 Minuten Spielzeit
+node test/fuzz.mjs 200 20000 --workers 4 --json roh.json
+```
+
+Verteilt die Laeufe ueber `worker_threads` auf alle Kerne. Je Lauf wird
+geprueft: keine Ausnahme, keine NaN oder Positionen ausserhalb der Karte,
+keine negativen Vorraete, und der Speicherstand laesst sich schreiben und
+wieder lesen. Ausgegeben werden Median, Mittel und Spannweite von Voelkern,
+Groessen, Arten, Bauwerken, Forschungsstufen, Kriegen, Buendnissen und
+Speichergroesse – je Kartenvorlage aufgeschluesselt.
+
+**"Parallel" heisst hier: auf N Kernen.** Node laeuft einfaedig; tausend
+wirklich gleichzeitige Welten gibt es auf keiner Maschine dieser Groesse.
+
+Der Massentest hat die Balance dieser Phase bestimmt, nicht das Bauchgefuehl:
+
+| Befund (200 Laeufe) | Aenderung |
+|---|---|
+| 49 % der Spiele ohne ein einziges Bauwerk, Median 1 Forschungsstufe von 8 | Forschungskosten rund ein Drittel runter, Punkte je Nahrung und je Tick rauf |
+| Buendnisse kamen praktisch nie vor | `DIPLO.DRIFT` hoch, Buendnisschwelle von 0.6 auf 0.5 |
+| Speicherstand 711 KB | Variantenkarte nicht mehr speichern (siehe 8l), abgeleitete Eigenschaftswerte neu rechnen: **279 KB** |
+| Steppe bekam nie Lehm (kein Wasser) | Lehm auch aus tiefer Erde beim Graben |
+
+---
+
 ## 9. Wichtige Konstanten (`js/config.js`)
 
 | Gruppe | Wert | Bedeutung |
@@ -873,6 +1019,19 @@ ohne Tagesrhythmus besser vergleichbar sind.
 | `CREATURES.GRAZE_CHANCE/BITE` | 0.03 / 1 | Frassdruck der Weidegaenger |
 | `CREATURES.PLANT_REGROW_*` | 150 / 220 / 0.38 | Ausbreitung der Pflanzen |
 | `CINEMA.FRONT_MIN_ANTS` | 4 | ab so vielen Kaempfenden folgt die Kamera |
+| `TRAITS` | 61 | Eigenschaften (41 Ameise, 20 Koenigin) |
+| `TRAIT_CFG.ANT_CHANCE` | 0.55 | Anteil Ameisen mit mindestens einer Eigenschaft |
+| `TRAIT_CFG.BASE_COURAGE` | 0.3 | Fluchtschwelle ohne Eigenschaft |
+| `DIPLO.WAR_BELOW` | -0.35 | ab hier gilt Krieg |
+| `DIPLO.ALLY_ABOVE` | 0.5 | ab hier gilt Buendnis |
+| `DIPLO.ZEAL_TICKS` | 9000 | wie lange der Kriegsduft nachwirkt (5 min) |
+| `DIPLO.WAVE_BASE/GROWTH` | 8 / 1.45 | erste Welle und Wachstum je weiterer |
+| `COMBAT.RAID_MAX_SHARE` | 0.45 | hoechstens dieser Anteil des Volkes je Welle |
+| `BUILD.MAX_PER_COLONY` | 40 | Bauwerke je Volk |
+| `BUILD.POINTS_PER_FOOD` | 0.022 | Forschung je eingetragener Nahrungseinheit |
+| `BUILD.MAX_BUILDERS` | 12 | Ameisen gleichzeitig an einer Baustelle |
+| `RESEARCH_TREE` | 8 Stufen | 60 bis 460 Punkte, mit Vorbedingungen |
+| `EVO.MATE_RADIUS` | 14 | Reichweite der Paarung beim Hochzeitsflug |
 
 Kastenwerte (`CASTE_STATS`) und Generatorparameter (`GEN`) liegen ebenfalls
 vollstaendig in `config.js`.
@@ -971,10 +1130,11 @@ Speicherstand 2000 Ticks lang bitgenau wie das Original weiter
 | 8 | Evolution, Genom, Mutation, Hochzeitsflug, Kasten | **fertig** (Gen-Verlaufskurven offen) |
 | 9 | Goettliche Eingriffe (24 Stueck), Energie-Modus, Forschungsmenue | **fertig** |
 | 10 | Tag/Nacht, Teilchen, Ton, Speichern/Laden, Einstellungen, Balancing | **fertig** |
+| 11 | Eigenschaften, Diplomatie und Kriegsduft, Materialien, Bauwerke, Forschung, Massentest | **fertig** |
 
 ### Geprueft
 
-Headless (`test/sim-bench.mjs`, **24/24**):
+Headless (`test/sim-bench.mjs`, **36/36**):
 
 * Gleicher Seed erzeugt identischen Verlauf – mit allen Systemen.
 * Die Kolonie erweitert ihr Nest ohne Eingriff, der Erdhuegel waechst mit.
@@ -991,20 +1151,32 @@ Headless (`test/sim-bench.mjs`, **24/24**):
   danach weiter.
 * Tag ist heller als Nacht; nachtaktive und tagaktive Arten tauschen die
   Rollen; die Welt fuehrt eine Tageszeit mit.
-* Ein Speicherstand (379 KB) laesst sich laden, hat denselben Bestand und
+* Ein Speicherstand (116 KB) laesst sich laden, hat denselben Bestand und
   laeuft **2000 Ticks bitgenau gleich** weiter.
+* Jede Koenigin hat einen Charakter, Ameisen werden mit Eigenschaften
+  geboren (131 von 243, 41 verschiedene), und die Werte aendern sich
+  wirklich (kraeftig 1.35 HP gegen zierlich 0.75).
+* Kriegsduft auf die Koenigin erklaert Krieg, es folgen acht immer
+  groessere Wellen, Friedensduft beendet ihn wieder.
+* Eine Kolonie erforscht ohne Zutun sieben von acht Stufen, sammelt Lehm,
+  Kalk und Chitin und errichtet von selbst Bauwerke.
 * Proteinueberschuss macht Koerpergene messbar instabiler als
   Zuckerueberschuss und umgekehrt; Stress vervielfacht die Streuung.
 
-Im Browser (`test/browser-check.mjs`, **36/36**): Ebenenwechsel und
+Im Browser (`test/browser-check.mjs`, **41/41**): Ebenenwechsel und
 gemerkte Kamera, kontextabhaengige Legende und Werkzeugleiste,
 Bauauftraege, Terrain malen, Kolonie gruenden, Ameisen absetzen, Nahrung
 ablegen, Kreaturen spawnen, Forschungsmenue mit Genom-Editor und
 Kastenfreischaltung, Hochzeitsflug, Schnelldurchlauf, Pheromon-Overlay,
 Brut, Stammbaum, Kartenvorlagen, Bild-in-Bild mit echtem Terrain,
 Eingriffe mit Reglern, Meteor mit Krater/Wackeln/Teilchen, Nachtblende,
-Einstellungsfenster, Speichern und Laden, Einheiten entfernen – alles ohne
+Einstellungsfenster, Speichern und Laden, Einheiten entfernen,
+Eigenschaften im Inspektor, Kriegsduft auf die Koenigin, Bauwerke setzen
+und zeichnen, Forschungsbaum und Charakter im Forschungsmenue,
+Kolonieliste mit Charakter, Baustoffen und Bauwerken – alles ohne
 Konsolenfehler.
+
+Massentest (`test/fuzz.mjs`): siehe Abschnitt 8q.
 
 ---
 
@@ -1060,8 +1232,23 @@ Konsolenfehler.
 12. **Teilchen sind nicht Teil der Simulation.** Sie benutzen bewusst
     `Math.random()` und beeinflussen den Determinismus nicht. Im
     Schnelldurchlauf gehen sie verloren; das ist Absicht.
-13. **Der Speicherstand haelt keine abgeleiteten Daten.** Distanzfelder,
+13. **Eigenschaften sind nicht vererbbar.** Sie werden bei jeder Geburt
+    neu gewuerfelt. Eine Kolonie voller tapferer Ameisen kann man sich
+    also nicht zuechten – dafuer sind die Gene da. Das ist Absicht: sonst
+    gaebe es zwei konkurrierende Vererbungssysteme nebeneinander, und die
+    Gene wuerden bedeutungslos.
+14. **Die Diplomatie kennt nur Paare.** Es gibt keine Buendnisblöcke, keine
+    Kriegserklaerung "alle gegen einen" und keine Buendnistreue: ein
+    Verbuendeter hilft passiv (er greift nicht an), zieht aber nicht mit
+    in den Krieg. Das waere der naechste sinnvolle Schritt.
+15. **Ein Volk baut immer nur an EINER Baustelle.** Mehr liesse sich mit
+    den vorhandenen Arbeiterinnen ohnehin nicht bedienen, und die
+    Warteschlange bliebe staendig stecken.
+16. **Der Speicherstand haelt keine abgeleiteten Daten.** Distanzfelder,
     Spatial Hashes und Zaehler werden beim Laden neu gerechnet. Die
     Distanzfelder werden dabei SOFORT und vollstaendig gerechnet (nicht
     ueber das uebliche Budget von drei je Tick), sonst laufen die ersten
-    Ticks auf halbfertigen Feldern und der Verlauf weicht ab.
+    Ticks auf halbfertigen Feldern und der Verlauf weicht ab. Seit
+    Version 1.1.0 wird auch die Variantenkarte nicht mehr gespeichert,
+    sondern aus ihrem Seed neu erzeugt – das allein hat den Stand von
+    800 KB auf 279 KB gebracht.

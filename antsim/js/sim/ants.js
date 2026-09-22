@@ -17,7 +17,7 @@
 
 import {
   ANTS, LIMITS, PORTALS, DIG, PHERO, FOOD, NUTRITION, LIFE, NUTRIENT,
-  FORTIFY, STABILITY, DAYNIGHT, GODMODE,
+  FORTIFY, STABILITY, DAYNIGHT, GODMODE, TRAIT_CFG, BUILD,
 } from '../config.js';
 import { LEVEL_KIND } from './levels.js';
 import { CASTE, casteDef } from './castes.js';
@@ -25,6 +25,7 @@ import { dumpSoil, FOOD_OF_CELL, SURFACE_CELL } from './surface.js';
 import { isFoodCell, dominantNutrient } from './food.js';
 import { storeFood } from './nutrition.js';
 import { PH } from './pheromones.js';
+import { antEffects, FLAG } from './traits.js';
 import { NEST_CELL } from './nest.js';
 
 /** Wasserzelle je Ebenenart (0 = Oberflaeche, 1 = Nest). */
@@ -53,6 +54,7 @@ export const ANT_STATE = {
   PLUG: 17,
   RAID: 18,        // unterwegs zu einem fremden Nest
   LOOT: 19,        // mit Beute auf dem Heimweg
+  FETCH: 20,       // unterwegs zu einer Materialfundstelle
 };
 
 export const ANT_STATE_LABEL = {
@@ -73,12 +75,64 @@ export const CARRY = {
   RESIN: 5,
   WOUNDED: 6,
   DEAD: 7,
+  MATERIAL: 8,  // Lehm, Kalk oder Chitin – welches steht in carrySource
 };
 
 export const CARRY_LABEL = {
   0: '-', 1: 'Aushub', 2: 'Nahrung', 3: 'Brut', 4: 'Kiesel', 5: 'Harz',
-  6: 'Verwundete', 7: 'Toten',
+  6: 'Verwundete', 7: 'Toten', 8: 'Baustoff',
 };
+
+/**
+ * Material als kleine Zahl, damit es in carrySource passt (Uint8Array).
+ * 1 = Lehm, 2 = Kalk, 3 = Chitin.
+ */
+export const MATERIAL_ID = { clay: 1, lime: 2, chitin: 3 };
+export const MATERIAL_NAME = { 1: 'clay', 2: 'lime', 3: 'chitin' };
+
+/**
+ * Welches neue Material liegt unter dieser Zelle?
+ *
+ * Lehm gibt es nur in Wassernaehe – sonst waere er ueberall und damit
+ * wertlos. Kalk kommt aus Stein und ist entsprechend selten, weil Stein
+ * selten ist. Chitin faellt nur bei erlegten Tieren an und wird deshalb
+ * hier nicht gefunden.
+ */
+function materialUnder(level, x, y, colony, rng) {
+  const c = level.cells[y * level.w + x];
+  /**
+   * Lehm liegt im feuchten Saum um Pfuetzen. Der erste Anlauf verlangte
+   * ERDE hoechstens drei Zellen vom Wasser entfernt – auf der Standardkarte
+   * gab es davon exakt null Zellen, weil Wasser von einem Sandstreifen
+   * umgeben ist. Jetzt zaehlt auch Sand und der Saum ist breiter.
+   */
+  if ((c === SURFACE_CELL.DIRT || c === SURFACE_CELL.SAND)
+      && colony.knownMaterials.has('clay')
+      && (colony.stores.clay || 0) < BUILD.MATERIAL_CAP
+      && rng.chance(BUILD.CLAY_CHANCE)) {
+    const R = BUILD.CLAY_RADIUS;
+    for (let dy = -R; dy <= R; dy++) {
+      for (let dx = -R; dx <= R; dx++) {
+        if (level.get(x + dx, y + dy) === SURFACE_CELL.WATER) return 'clay';
+      }
+    }
+    return null;
+  }
+  /**
+   * Kalk wird aus Stein geschlagen. Stein ist unpassierbar, also steht die
+   * Ameise DANEBEN und schlaegt hinein – deshalb wird die Nachbarschaft
+   * geprueft und nicht die Zelle selbst.
+   */
+  if (colony.knownMaterials.has('lime')
+      && (colony.stores.lime || 0) < BUILD.MATERIAL_CAP
+      && rng.chance(BUILD.LIME_CHANCE)) {
+    if (level.get(x - 1, y) === SURFACE_CELL.STONE
+        || level.get(x + 1, y) === SURFACE_CELL.STONE
+        || level.get(x, y - 1) === SURFACE_CELL.STONE
+        || level.get(x, y + 1) === SURFACE_CELL.STONE) return 'lime';
+  }
+  return null;
+}
 
 const TWO_PI = Math.PI * 2;
 
@@ -121,6 +175,25 @@ export class Ants {
      * weniger Sekunden komplett. Mit Streuung schrumpft es stattdessen.
      */
     this.hungerTol = new Float32Array(capacity);
+    /** Bis zu zwei Eigenschaften je Ameise (0 = keine), siehe traits.js. */
+    this.trait1 = new Uint8Array(capacity);
+    this.trait2 = new Uint8Array(capacity);
+    /** Verhaltensschalter der Eigenschaften als Bitmaske. */
+    this.traitBits = new Uint32Array(capacity);
+    /** Fluchtschwelle als Anteil der Trefferpunkte (aus den Eigenschaften). */
+    this.courage = new Float32Array(capacity);
+    /** Arbeitsleistung beim Graben und Bauen (aus den Eigenschaften). */
+    this.workMul = new Float32Array(capacity);
+    /** Tragfaehigkeit je Fuhre (aus den Eigenschaften). */
+    this.carryMul = new Float32Array(capacity);
+    /** Restticks einer Giftwirkung. */
+    this.poison = new Uint16Array(capacity);
+    this.senseMul = new Float32Array(capacity);
+    this.trailMul = new Float32Array(capacity);
+    this.nurseMul = new Float32Array(capacity);
+    this.damageMul = new Float32Array(capacity);
+    this.buildMul = new Float32Array(capacity);
+    this.loyalty = new Float32Array(capacity);
     this.age = new Uint32Array(capacity);
 
     // --- Tragelast (Typ, Naehrstoff, Menge) – ab Phase 2/3 ----------------
@@ -235,6 +308,48 @@ export class Ants {
     this.raidTarget[i] = -1;
     this.carryRef[i] = -1;
     this.anim[i] = 0;
+
+    /**
+     * Eigenschaften ZULETZT, damit sie auf die fertigen Grundwerte wirken
+     * und nicht von der Grundinitialisierung ueberschrieben werden.
+     * Zahlenwirkungen werden hier einmalig eingerechnet; Verhalten steckt
+     * in der Bitmaske und wird im Tick abgefragt.
+     */
+    const t1 = opts.trait1 || 0, t2 = opts.trait2 || 0;
+    this.trait1[i] = t1;
+    this.trait2[i] = t2;
+    this.poison[i] = 0;
+    if (t1 || t2) {
+      const eff = antEffects(t1, t2);
+      this.traitBits[i] = eff.bits;
+      this.courage[i] = eff.courage;
+      this.workMul[i] = eff.dig;
+      this.carryMul[i] = eff.carry;
+      this.senseMul[i] = eff.sense;
+      this.trailMul[i] = eff.trail;
+      this.nurseMul[i] = eff.nurse;
+      this.loyalty[i] = eff.loyalty;
+      this.speed[i] *= eff.speed;
+      this.hp[i] *= eff.hp;
+      this.hpMax[i] = this.hp[i];
+      this.phenoSize[i] *= eff.size;
+      this.phenoLife[i] *= eff.life;
+      this.hungerTol[i] *= eff.hungerTol;
+      this.damageMul[i] = eff.damage;
+      this.buildMul[i] = eff.build;
+    } else {
+      this.traitBits[i] = 0;
+      this.courage[i] = TRAIT_CFG.BASE_COURAGE;
+      this.workMul[i] = 1;
+      this.carryMul[i] = 1;
+      this.senseMul[i] = 1;
+      this.trailMul[i] = 1;
+      this.nurseMul[i] = 1;
+      this.loyalty[i] = 0;
+      this.damageMul[i] = 1;
+      this.buildMul[i] = 1;
+    }
+
     this.count++;
     return i;
   }
@@ -352,7 +467,27 @@ export class Ants {
           this.hunger[i] = Math.max(0, this.hunger[i] - NUTRITION.HUNGER_RATE * 3);
         }
       }
+      // ---- Gift wirkt nach -----------------------------------------------
+      if (this.poison[i] > 0) {
+        this.poison[i]--;
+        this.hp[i] -= TRAIT_CFG.POISON_DAMAGE;
+        if (this.hp[i] <= 0) { this._die(i, level, ctx, 'Gift'); continue; }
+      }
+
       let slow = this.hunger[i] > NUTRITION.HUNGER_SLOW ? 0.55 : 1;
+      /**
+       * Eigener Tagesrhythmus. Nachtaktive Ameisen arbeiten im Dunkeln
+       * ohne Einbussen und tagsueber traege, Sonnenkinder umgekehrt. Das
+       * gilt UEBERALL, auch im Nest – der Rhythmus steckt im Tier, nicht
+       * im Licht, das dort unten ohnehin fehlt.
+       */
+      const bits = this.traitBits[i];
+      if (bits & (FLAG.NACHTAKTIV | FLAG.TAGAKTIV)) {
+        const light = ctx.light !== undefined ? ctx.light : 1;
+        const day = light > 0.7;
+        const matches = (bits & FLAG.NACHTAKTIV) ? !day : day;
+        slow *= matches ? TRAIT_CFG.RHYTHM_BONUS : TRAIT_CFG.RHYTHM_MALUS;
+      }
       if (colony) {
         // Seuche zehrt und steckt Nachbarinnen an
         if (colony.plague > 0) {
@@ -425,6 +560,17 @@ export class Ants {
 
       if (this.timer[i] > 0) this.timer[i]--;
 
+      /**
+       * Mut entscheidet, wann geflohen wird. Ohne Eigenschaft liegt die
+       * Schwelle bei TRAIT_CFG.BASE_COURAGE der Trefferpunkte; tollkuehne
+       * Ameisen fliehen nie, feige schon bei halber Kraft.
+       */
+      if (this.state[i] !== ANT_STATE.FLEE && !(bits & FLAG.KEINE_FLUCHT)
+          && this.hp[i] < this.hpMax[i] * (0.55 - this.courage[i])) {
+        this.state[i] = ANT_STATE.FLEE;
+        this.timer[i] = 120;
+      }
+
       if (isNest) this._nestBehaviour(level, i, ctx, colony, fields, rng);
       else this._surfaceBehaviour(level, i, ctx, colony, phero, rng);
 
@@ -474,12 +620,48 @@ export class Ants {
     }
 
     switch (this.state[i]) {
+      /**
+       * MATERIAL HOLEN. Die Kolonie nennt eine Fundstelle (structures
+       * .updateWants); diese Ameise laeuft gezielt hin. Unterwegs nimmt sie
+       * Nahrung trotzdem mit – ein Umweg ist kein Grund, an einem
+       * Zuckerwuerfel vorbeizulaufen.
+       */
+      case ANT_STATE.FETCH: {
+        if (this.carryType[i] !== CARRY.NONE || !colony || !colony.materialSpot
+            || this.timer[i] === 0) {
+          this.state[i] = this.carryType[i] === CARRY.NONE
+            ? ANT_STATE.EXPLORE : ANT_STATE.RETURN;
+          this.timer[i] = rng.intRange(120, 600);
+          break;
+        }
+        const mat = materialUnder(level, cx, cy, colony, rng);
+        if (mat) {
+          this.carryType[i] = CARRY.MATERIAL;
+          this.carryAmount[i] = BUILD.YIELD[mat] || 2;
+          this.carrySource[i] = MATERIAL_ID[mat];
+          if (mat === 'clay') level.set(cx, cy, SURFACE_CELL.SAND);
+          this.trip[i] = 0;
+          this._beginReturn(level, i, ctx);
+          break;
+        }
+        const sx = colony.materialSpot.x + 0.5, sy = colony.materialSpot.y + 0.5;
+        const sdx = sx - this.x[i], sdy = sy - this.y[i];
+        if (sdx * sdx + sdy * sdy < 9) {
+          // Am Ziel, aber nichts gefunden: im Umkreis suchen
+          this.dir[i] += rng.range(-1.2, 1.2);
+        } else {
+          this.dir[i] += angleDelta(this.dir[i], Math.atan2(sdy, sdx)) * 0.3
+            + rng.range(-0.12, 0.12);
+        }
+        break;
+      }
+
       case ANT_STATE.EXPLORE: {
         // Nahrung unter den Fuessen?
         if (this.carryType[i] === CARRY.NONE && ctx.food) {
           const cell = level.cells[cy * level.w + cx];
           if (isFoodCell(cell) && level.meta[cy * level.w + cx] > 0) {
-            const got = ctx.food.take(level, cx, cy, FOOD.PICKUP);
+            const got = ctx.food.take(level, cx, cy, FOOD.PICKUP * this.carryMul[i]);
             if (got > 0) {
               this.carryType[i] = CARRY.FOOD;
               this.carrySource[i] = cell;
@@ -513,6 +695,37 @@ export class Ants {
           this.carryAmount[i] = FORTIFY.RESIN_PER_HARVEST;
           this.trip[i] = 0;
           this._beginReturn(level, i, ctx);
+          break;
+        }
+
+        /**
+         * Neue Materialien (Phase 11). Sie werden nur gesammelt, wenn die
+         * Kolonie sie ueberhaupt kennt – erforscht wird ueber den
+         * Forschungsbaum. Vorher laeuft eine Ameise an Lehm vorbei, ohne
+         * zu wissen, was sie damit soll.
+         */
+        if (this.carryType[i] === CARRY.NONE && colony && colony.knownMaterials) {
+          const mat = materialUnder(level, cx, cy, colony, rng);
+          if (mat) {
+            this.carryType[i] = CARRY.MATERIAL;
+            this.carryAmount[i] = BUILD.YIELD[mat] || 2;
+            this.carrySource[i] = MATERIAL_ID[mat];
+            // Lehmabbau hinterlaesst Sand; Kalk laesst den Stein stehen
+            if (mat === 'clay') level.set(cx, cy, SURFACE_CELL.SAND);
+            this.trip[i] = 0;
+            this._beginReturn(level, i, ctx);
+            break;
+          }
+        }
+
+        /**
+         * Material holen, wenn die Kolonie etwas braucht. Nur ein kleiner
+         * Teil der Sammlerinnen – sonst steht die Nahrungsversorgung still.
+         */
+        if (this.carryType[i] === CARRY.NONE && colony && colony.materialSpot
+            && rng.chance(BUILD.FETCH_SHARE * 0.02)) {
+          this.state[i] = ANT_STATE.FETCH;
+          this.timer[i] = BUILD.JOB_TIMEOUT;
           break;
         }
 
@@ -609,7 +822,13 @@ export class Ants {
     const f = phero.sense(colonyId, type, fx, fy, needWeight);
     const l = phero.sense(colonyId, type, lx, ly, needWeight);
     const r = phero.sense(colonyId, type, rx, ry, needWeight);
-    if (f < 3 && l < 3 && r < 3) return false;
+    /**
+     * Spurentreue und Eigensinn: die Schwelle, ab der eine Spur ueberhaupt
+     * wahrgenommen wird, haengt am Charakter. Eine eigensinnige Ameise
+     * uebersieht schwache Spuren und sucht lieber selbst.
+     */
+    const thr = 3 / (this.trailMul[i] || 1);
+    if (f < thr && l < thr && r < thr) return false;
     if (f >= l && f >= r) {
       this.dir[i] += rng.range(-PHERO.NOISE, PHERO.NOISE) * 0.5;
     } else if (l > r) {
@@ -629,7 +848,8 @@ export class Ants {
       case ANT_STATE.DELIVER: {
         const carried = this.carryType[i];
         if (carried !== CARRY.FOOD && carried !== CARRY.PEBBLE
-            && carried !== CARRY.RESIN && carried !== CARRY.BROOD) {
+            && carried !== CARRY.RESIN && carried !== CARRY.BROOD
+            && carried !== CARRY.MATERIAL) {
           this.state[i] = ANT_STATE.EXPLORE;
           this.timer[i] = rng.intRange(30, 120);
           break;
@@ -651,6 +871,12 @@ export class Ants {
               colony.looted = (colony.looted || 0) + 1;
             } else if (carried === CARRY.PEBBLE) {
               colony.stores.pebble = (colony.stores.pebble || 0) + this.carryAmount[i];
+            } else if (carried === CARRY.MATERIAL) {
+              const key = MATERIAL_NAME[this.carrySource[i]];
+              if (key) {
+                colony.stores[key] = Math.min(BUILD.MATERIAL_CAP,
+                  (colony.stores[key] || 0) + this.carryAmount[i]);
+              }
             } else {
               colony.stores.resin = (colony.stores.resin || 0) + this.carryAmount[i];
             }
@@ -679,7 +905,7 @@ export class Ants {
         const larva = ctx.brood.findHungryLarva(colony.id, level.id, this.x[i], this.y[i], 7);
         if (larva >= 0) {
           // Fuettern kostet Protein aus dem Vorrat
-          const want = 0.5;
+          const want = 0.5 * this.nurseMul[i];
           const have = Math.min(want, colony.storeArr[NUTRIENT.PROTEIN]);
           if (have > 0.01) {
             const used = ctx.brood.feed(larva, have);
@@ -697,6 +923,48 @@ export class Ants {
         break;
       }
 
+      /**
+       * BAUEN AN EINEM BAUWERK. Anders als beim Graben gibt es hier eine
+       * feste Stelle mit einem Aufwandszaehler; steht die Ameise nah genug,
+       * traegt sie ihre Arbeitsleistung bei.
+       */
+      case ANT_STATE.BUILD: {
+        const q = colony ? colony.pendingBuild : null;
+        if (!q || !q.length || this.timer[i] === 0) {
+          this.state[i] = ANT_STATE.EXPLORE;
+          this.timer[i] = rng.intRange(ANTS.NEST_STAY_MIN, ANTS.NEST_STAY_MAX);
+          break;
+        }
+        const job = q[0];
+        if (job.levelId !== level.id) {
+          this.state[i] = ANT_STATE.EXPLORE;
+          this.timer[i] = rng.intRange(30, 120);
+          break;
+        }
+        const bx = job.x + 0.5, by = job.y + 0.5;
+        const bdx = bx - this.x[i], bdy = by - this.y[i];
+        if (bdx * bdx + bdy * bdy <= DIG.REACH * DIG.REACH) {
+          this.dir[i] = Math.atan2(bdy, bdx);
+          this.anim[i] += 0.3;
+          const rate = DIG.RATE_PER_ANT * this.buildMul[i]
+            * (colony.genome ? 0.6 + colony.genome.bautrieb : 1);
+          const r = ctx.structures.contribute(colony, rate);
+          if (r !== 0) {
+            // 1 = fertig, -1 = Material fehlt. Beides beendet den Auftrag
+            // fuer diese Ameise; sie geht wieder sammeln.
+            if (r > 0) {
+              colony.builtTotal = (colony.builtTotal || 0) + 1;
+              colony.research += BUILD.POINTS_PER_BUILD * 10;
+            }
+            this.state[i] = ANT_STATE.EXPLORE;
+            this.timer[i] = rng.intRange(30, 120);
+          }
+        } else if (!fields || !this._steerField(level, i, fields.dig, rng)) {
+          this.dir[i] += angleDelta(this.dir[i], Math.atan2(bdy, bdx)) * 0.35;
+        }
+        break;
+      }
+
       case ANT_STATE.DIG: {
         if (!colony || colony.digActive < 0 || this.timer[i] === 0) {
           this.state[i] = ANT_STATE.EXPLORE;
@@ -709,10 +977,29 @@ export class Ants {
         if (dx * dx + dy * dy <= DIG.REACH * DIG.REACH) {
           this.dir[i] = Math.atan2(dy, dx);
           this.anim[i] += 0.35;
+          // Gen der Kolonie mal Charakter der einzelnen Ameise
+          const isBuild = colony.digTarget && colony.digTarget[0];
           const rate = DIG.RATE_PER_ANT
-            * (colony.genome ? 0.6 + colony.genome.grabgeschwindigkeit : 1);
+            * (colony.genome ? 0.6 + colony.genome.grabgeschwindigkeit : 1)
+            * (isBuild ? this.buildMul[i] : this.workMul[i]);
           const done = ctx.construction.contribute(colony, level, rate);
           if (done >= 0) {
+            /**
+             * Tiefe Erde ist feucht und gibt Lehm. Ohne diese Quelle
+             * haengt der ganze Bauzweig auf trockenen Karten (Steppe) in
+             * der Luft: dort gibt es kein Wasser und damit keinen Lehmsaum.
+             */
+            if (colony.lastDugType === NEST_CELL.SOIL
+                && colony.knownMaterials && colony.knownMaterials.has('clay')
+                && (colony.stores.clay || 0) < BUILD.MATERIAL_CAP
+                && ty > BUILD.CLAY_DEPTH && rng.chance(BUILD.CLAY_DIG_CHANCE)) {
+              this.carryType[i] = CARRY.MATERIAL;
+              this.carryAmount[i] = BUILD.YIELD.clay;
+              this.carrySource[i] = MATERIAL_ID.clay;
+              this.state[i] = ANT_STATE.DELIVER;
+              this.timer[i] = 1200;
+              break;
+            }
             if (colony.lastDugType === NEST_CELL.PEBBLE) {
               // Kiesel ist Baumaterial und geht in die Vorratskammer
               this.carryType[i] = CARRY.PEBBLE;
@@ -852,6 +1139,18 @@ export class Ants {
            * umgesetzt als Wahrscheinlichkeit statt als Befehl.
            */
           const digChance = colony.starving ? 0.004 : 0.05;
+          /**
+           * Ein offener Bauwerksauftrag hat Vorrang vor dem Graben: er ist
+           * teuer, aber er bringt dem Volk etwas, das es sonst nicht hat
+           * (Geschuetz, Speicher, Werkstatt).
+           */
+          if (colony.pendingBuild && colony.pendingBuild.length && !colony.starving
+              && colony.builders < BUILD.MAX_BUILDERS && rng.chance(digChance * 0.5)) {
+            this.state[i] = ANT_STATE.BUILD;
+            this.timer[i] = BUILD.JOB_TIMEOUT;
+            colony.builders++;
+            break;
+          }
           if (colony.digActive >= 0
               && colony.diggers < Math.max(3, inNest * DIG.DIGGER_SHARE)
               && rng.chance(digChance)) {
@@ -1018,7 +1317,7 @@ export class Ants {
       this.timer[i] = ctx.rng.intRange(DIG.DUMP_STAY[0], DIG.DUMP_STAY[1]);
     } else if (toNest && (this.carryType[i] === CARRY.FOOD
         || this.carryType[i] === CARRY.PEBBLE || this.carryType[i] === CARRY.RESIN
-        || this.carryType[i] === CARRY.BROOD)) {
+        || this.carryType[i] === CARRY.BROOD || this.carryType[i] === CARRY.MATERIAL)) {
       // Beute in die Vorratskammer bringen
       this.state[i] = ANT_STATE.DELIVER;
       this.timer[i] = 1200;

@@ -22,7 +22,7 @@
  * Angreifer suchen tatsaechlich.
  */
 
-import { COMBAT, PHERO, NUTRIENT, LIFE } from '../config.js';
+import { COMBAT, PHERO, NUTRIENT, LIFE, TRAIT_CFG, DIPLO } from '../config.js';
 import { LEVEL_KIND } from './levels.js';
 import { ANT_STATE, CARRY } from './ants.js';
 import { CASTE, casteDef } from './castes.js';
@@ -30,6 +30,8 @@ import { PH } from './pheromones.js';
 import { NEST_CELL, CHAMBER } from './nest.js';
 import { bus, CAT } from './events.js';
 import { FX } from './fx.js';
+import { FLAG } from './traits.js';
+import { STANCE } from './diplomacy.js';
 
 export const THREAT_LABEL = ['Frieden', 'Feinde in der Naehe', 'Kampf am Eingang', 'Feinde im Nest'];
 
@@ -118,9 +120,27 @@ export class Combat {
       const defColony = ctx.colonies.get(ants.colony[enemy]);
       if (defColony) defColony.stressEvents = (defColony.stressEvents || 0) + 0.0008;
 
+      // Giftbiss wirkt nach
+      if (ants.traitBits[i] & FLAG.GIFT) {
+        ants.poison[enemy] = TRAIT_CFG.POISON_TICKS;
+      }
+
       if (ants.hp[enemy] <= 0) {
-        this.world.emitFx(FX.GORE, level.id, ants.x[enemy] | 0, ants.y[enemy] | 0, 5);
-        this._kill(ants, ctx, level, enemy, colony);
+        /**
+         * Gluecklich: einmal knapp entkommen statt zu sterben. Das ist die
+         * einzige Stelle, an der eine Eigenschaft den Tod verhindert –
+         * deshalb kostet sie trotzdem fast alle Trefferpunkte.
+         */
+        if ((ants.traitBits[enemy] & FLAG.GLUECKSPILZ)
+            && ctx.rng.chance(TRAIT_CFG.LUCKY_DODGE)) {
+          ants.hp[enemy] = ants.hpMax[enemy] * 0.12;
+          ants.state[enemy] = ANT_STATE.FLEE;
+          ants.timer[enemy] = 90;
+        } else {
+          this.world.emitFx(FX.GORE, level.id, ants.x[enemy] | 0, ants.y[enemy] | 0, 5);
+          if (ants.traitBits[enemy] & FLAG.PLATZT) this._burst(ants, ctx, level, enemy);
+          this._kill(ants, ctx, level, enemy, colony);
+        }
       }
     }
   }
@@ -146,6 +166,11 @@ export class Combat {
    * wenn die Kolonie aggressiv ist; Soldatinnen und Raubzuegler immer.
    */
   _willFight(ants, colony, i, level) {
+    // Charakter geht vor Kaste: eine tollkuehne Sammlerin kaempft, eine
+    // besonnene Soldatin nur, wenn es sich lohnt.
+    const bits = ants.traitBits[i];
+    if (bits & (FLAG.KEINE_FLUCHT | FLAG.ANGRIFFSLUSTIG | FLAG.TORWACHE)) return true;
+    if (bits & FLAG.MEIDET_KAMPF) return colony.threat >= 2;
     const caste = ants.caste[i];
     if (caste === CASTE.SOLDIER || caste === CASTE.ARMOR || caste === CASTE.TITAN) return true;
     if (ants.state[i] === ANT_STATE.RAID || ants.state[i] === ANT_STATE.LOOT) return true;
@@ -165,7 +190,13 @@ export class Combat {
     const armor = 1 - COMBAT.ARMOR_MAX * armorGene;
     // Zuckermangel senkt die Kampfkraft
     const fed = 1 - (1 - COMBAT.HUNGER_PENALTY) * Math.min(1, ants.hunger[attacker] * 2);
-    let dmg = aDef.damage * COMBAT.DAMAGE_SCALE * jaw * armor * fed * ants.phenoSize[attacker];
+    let dmg = aDef.damage * COMBAT.DAMAGE_SCALE * jaw * armor * fed
+      * ants.phenoSize[attacker] * ants.damageMul[attacker];
+    // Wachposten in Reichweite staerken die eigenen Kaempferinnen
+    if (ctx.structures) {
+      dmg *= ctx.structures.guardBonus(level.id, ants.x[attacker], ants.y[attacker],
+        ants.colony[attacker]);
+    }
 
     // Engstelle: in einem schmalen Gang kommt nur die vorderste Reihe zum Zug
     const open = this._openNeighbours(level, ants.x[target] | 0, ants.y[target] | 0);
@@ -181,6 +212,21 @@ export class Combat {
     return dmg;
   }
 
+  /**
+   * Aufopfernd: die sterbende Ameise reisst Feinde in der Naehe mit.
+   * Eigene Schwestern bleiben verschont – sonst waere die Eigenschaft ein
+   * Eigentor und niemand wuerde sie behalten wollen.
+   */
+  _burst(ants, ctx, level, i) {
+    const cid = ants.colony[i];
+    const r = TRAIT_CFG.BURST_RADIUS;
+    level.spatial.query(ants.x[i], ants.y[i], r, (id) => {
+      if (!ants.alive[id] || ants.colony[id] === cid) return;
+      ants.hp[id] -= TRAIT_CFG.BURST_DAMAGE;
+    });
+    this.world.emitFx(FX.GORE, level.id, ants.x[i] | 0, ants.y[i] | 0, 12);
+  }
+
   _openNeighbours(level, x, y) {
     let n = 0;
     if (!level.isSolid(x - 1, y)) n++;
@@ -192,6 +238,10 @@ export class Combat {
 
   _kill(ants, ctx, level, victim, killerColony) {
     const vColony = ctx.colonies.get(ants.colony[victim]);
+    // Jeder Verlust drueckt die Beziehung – so entstehen Kriege von selbst
+    if (vColony && killerColony && killerColony.id !== vColony.id) {
+      ctx.world.diplomacy.shift(vColony.id, killerColony.id, -DIPLO.LOSS_PER_KILL);
+    }
     if (vColony) {
       vColony.lostToWar = (vColony.lostToWar || 0) + 1;
       vColony.stressEvents = (vColony.stressEvents || 0) + 0.03;
@@ -362,33 +412,57 @@ export class Combat {
   /** Lohnt sich ein Raubzug, und gegen wen? */
   considerRaid(colony, ctx) {
     const world = this.world;
-    if (colony.total < COMBAT.RAID_MIN_POP) return false;
-    if (world.tick - (colony.lastRaidTick || -1e9) < COMBAT.RAID_INTERVAL) return false;
+    const dip = world.diplomacy;
+    const warpath = dip.onWarpath(colony);
+
+    if (colony.total < COMBAT.RAID_MIN_POP && !warpath) return false;
+    const interval = dip.raidInterval(colony, COMBAT.RAID_INTERVAL);
+    if (world.tick - (colony.lastRaidTick || -1e9) < interval) return false;
     const soldiers = colony.population[CASTE.SOLDIER] + colony.population[CASTE.ARMOR]
       + colony.population[CASTE.TITAN];
-    if (soldiers < COMBAT.RAID_MIN_SOLDIERS) return false;
-    const aggr = colony.genome ? colony.genome.aggressivitaet : 0.5;
+    /**
+     * Auf Kriegspfad wird auch ohne Soldatinnen angegriffen – dann eben mit
+     * Arbeiterinnen. Ein gehetztes Volk fragt nicht, ob es ruestig ist.
+     */
+    if (soldiers < COMBAT.RAID_MIN_SOLDIERS && !warpath) return false;
+    const aggr = (colony.genome ? colony.genome.aggressivitaet : 0.5)
+      * (colony.character ? colony.character.aggression : 1);
     const hungry = colony.balanceArr[NUTRIENT.PROTEIN] < COMBAT.RAID_HUNGER;
-    if (!hungry && aggr < 0.55) return false;
-    if (colony.threat >= 2) return false;            // erst das eigene Haus
+    const atWarWithSomeone = world.colonies.colonies.some(
+      (c) => c.alive && c.id !== colony.id && dip.atWar(colony.id, c.id));
+    if (!hungry && !warpath && !atWarWithSomeone && aggr < 0.55) return false;
+    if (colony.threat >= 2 && !warpath) return false;   // erst das eigene Haus
 
     // Naechstes fremdes Nest suchen
     const surface = world.levels.surface;
     const own = world.portals.ofColony(colony.id)[0];
     if (!own) return false;
-    let best = null, bestD = 250 * 250;
+    let best = null, bestScore = -Infinity;
     for (const p of world.portals.portals) {
       if (p.colonyId === colony.id) continue;
       const other = world.colonies.get(p.colonyId);
       if (!other || !other.alive) continue;
-      // Junge Voelker sind die Reise nicht wert – und wuerden sonst
-      // reihenweise ausgeloescht, bevor sie Fuss fassen.
-      if (other.total < 40) continue;
+      // Verbuendete greift niemand an.
+      if (dip.allied(colony.id, other.id)) continue;
+      const war = dip.atWar(colony.id, other.id);
+      if (!war && dip.stance(colony.id, other.id) >= STANCE.PEACE) continue;
+      /**
+       * Junge Voelker sind die Reise normalerweise nicht wert – sie
+       * wuerden sonst reihenweise ausgeloescht, bevor sie Fuss fassen. Im
+       * erklaerten Krieg gilt diese Ruecksicht nicht.
+       */
+      const minPop = war ? DIPLO.WAR_MIN_TARGET : 40;
+      if (other.total < minPop) continue;
       const pos = p.on(surface.id);
       if (!pos) continue;
       const dx = pos.x - own.ax, dy = pos.y - own.ay;
-      const d = dx * dx + dy * dy;
-      if (d < bestD) { bestD = d; best = p; }
+      const d2 = dx * dx + dy * dy;
+      if (d2 > 250 * 250) continue;
+      // Naehe zaehlt, erklaerter Krieg zaehlt mehr, das Wunschziel am meisten
+      let score = -Math.sqrt(d2);
+      if (war) score += 160;
+      if (colony.warTarget === other.id) score += 300;
+      if (score > bestScore) { bestScore = score; best = p; }
     }
     if (!best) return false;
     return this.startRaid(colony, best, ctx, hungry);
@@ -400,7 +474,17 @@ export class Combat {
     const ants = ctx.ants;
     const pos = targetPortal.on(world.levels.surface.id);
     if (!pos) return false;
-    const want = ctx.rng.intRange(COMBAT.RAID_SQUAD[0], COMBAT.RAID_SQUAD[1]);
+    /**
+     * Truppstaerke. Im Frieden die uebliche Spanne; im Krieg entscheidet
+     * die Diplomatie, und jede weitere Welle faellt groesser aus – daher
+     * fuehlt sich ein Krieg wie eine Eskalation an und nicht wie ein
+     * Dauerzustand.
+     */
+    const dip = world.diplomacy;
+    const atWar = dip.atWar(colony.id, targetPortal.colonyId);
+    const want = (atWar || dip.onWarpath(colony))
+      ? Math.min(Math.round(colony.total * COMBAT.RAID_MAX_SHARE), dip.waveSize(colony))
+      : ctx.rng.intRange(COMBAT.RAID_SQUAD[0], COMBAT.RAID_SQUAD[1]);
     let picked = 0;
 
     for (let i = 0; i < ants.high && picked < want; i++) {
@@ -409,7 +493,9 @@ export class Combat {
       if (caste === CASTE.QUEEN || caste === CASTE.ALATE) continue;
       const isFighter = caste === CASTE.SOLDIER || caste === CASTE.ARMOR
         || caste === CASTE.TITAN || caste === CASTE.ACID || caste === CASTE.BOMB;
-      if (!isFighter && !ctx.rng.chance(0.3)) continue;
+      // Im Krieg ruecken auch Arbeiterinnen aus, im Frieden nur wenige.
+      const draft = (atWar || dip.onWarpath(colony)) ? 0.75 : 0.3;
+      if (!isFighter && !ctx.rng.chance(draft)) continue;
       ants.state[i] = ANT_STATE.RAID;
       ants.targetX[i] = pos.x;
       ants.targetY[i] = pos.y;
@@ -420,9 +506,13 @@ export class Combat {
     if (picked < 4) return false;
     colony.lastRaidTick = world.tick;
     colony.raids = (colony.raids || 0) + 1;
+    dip.countWave(colony);
+    // Ein Angriff verschlechtert die Beziehung weiter – Kriege verfestigen sich
+    dip.shift(colony.id, targetPortal.colonyId, -DIPLO.LOSS_PER_KILL * picked);
     const target = world.colonies.get(targetPortal.colonyId);
     bus.logEvent(CAT.KAMPF, colony.name + ' schickt ' + picked + ' Kaempferinnen gegen '
-      + (target ? target.name : '?') + (hungry ? ' (Proteinmangel)' : ''), {
+      + (target ? target.name : '?')
+      + (atWar ? ' – Welle ' + dip.wave[colony.id] : (hungry ? ' (Proteinmangel)' : '')), {
       tick: world.tick, levelId: world.levels.surface.id, x: pos.x, y: pos.y, colonyId: colony.id,
     });
     world.raiseAlarm(target, 2, world.levels.surface.id, pos.x, pos.y);

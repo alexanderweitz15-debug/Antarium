@@ -20,6 +20,7 @@ import { cellSwatch } from './swatch.js';
 import { bus, CAT } from '../sim/events.js';
 import { SPECIES_LIST } from '../sim/creatures.js';
 import { INTERVENTIONS } from '../sim/interventions.js';
+import { STRUCT_LIST } from '../sim/structures.js';
 import { STAGE_NAMES } from '../sim/brood.js';
 
 /**
@@ -101,6 +102,15 @@ export const TOOL_DEFS = [
     species: sp.key, hint: sp.desc,
   })),
 
+  // --- Bauwerke direkt setzen (Sandkasten) ------------------------------
+  ...STRUCT_LIST.map((sd) => ({
+    key: 'b_' + sd.key, name: sd.name, kind: 'structure',
+    where: sd.where === 'both' ? 'both' : sd.where,
+    structure: sd.key, icon: sd.icon,
+    hint: sd.desc + ' Stufe unten waehlbar; der Bau entsteht sofort und'
+      + ' kostet nichts.',
+  })),
+
   // --- Goettliche Eingriffe (aus der Tabelle in interventions.js) -------
   ...INTERVENTIONS.map((iv) => ({
     key: 'iv_' + iv.key, name: iv.name, kind: 'god',
@@ -140,6 +150,8 @@ export class Toolbar {
     this.chamberType = CHAMBER.NONE;
     /** Brutstadium fuer das Brut-Werkzeug (0 = Ei). */
     this.broodStage = 0;
+    /** Stufe fuer das Bauwerk-Werkzeug. */
+    this.tier = 1;
     /** Staerke und Radius der goettlichen Eingriffe. */
     this.power = GODMODE.DEFAULT_POWER;
     this.radius = GODMODE.DEFAULT_RADIUS;
@@ -206,6 +218,7 @@ export class Toolbar {
       ['Einheiten', tools.filter((t) => t.kind === 'ants' || t.kind === 'colony')],
       ['Kreaturen', tools.filter((t) => t.kind === 'creature')],
       ['Brut', tools.filter((t) => t.kind === 'brood')],
+      ['Bauwerke', tools.filter((t) => t.kind === 'structure')],
       ['Eingriffe', tools.filter((t) => t.kind === 'god')],
     ];
 
@@ -214,6 +227,7 @@ export class Toolbar {
       this.el.appendChild(this._group(title, list, level));
     }
 
+    if (tools.some((t) => t.kind === 'structure')) this.el.appendChild(this._tierRow());
     this.el.appendChild(this._brushRow());
     this.el.appendChild(this._godRow());
     this.el.appendChild(this._colonyRow());
@@ -248,6 +262,10 @@ export class Toolbar {
         b.innerHTML = this._iconHtml(t.icon, level) + '<span>' + t.name + '</span>';
         b.title = t.name + ' – ' + t.hint + ' (Kosten ' + t.cost + ')';
         b.classList.add('god');
+      } else if (t.kind === 'structure') {
+        b.innerHTML = this._iconHtml(t.icon, level) + '<span>' + t.name + '</span>';
+        b.title = t.name + ' – ' + t.hint;
+        b.classList.add('struct');
       } else if (t.kind === 'brood') {
         b.innerHTML = '<img src="' + this.sprites.dataURL('brood_egg', 0) + '" alt="">'
           + '<span>' + t.name + '</span>';
@@ -355,6 +373,25 @@ export class Toolbar {
     this._syncGodMode = sync;
     mode.appendChild(btn);
     box.appendChild(mode);
+    return box;
+  }
+
+  /** Stufenwahl fuer das Bauwerk-Werkzeug. */
+  _tierRow() {
+    const box = document.createElement('div');
+    box.className = 'tool-group';
+    box.innerHTML = '<h3>Bauwerksstufe</h3>';
+    const row = document.createElement('div');
+    row.className = 'tool-row wrap';
+    for (let i = 1; i <= 3; i++) {
+      const b = document.createElement('button');
+      b.className = 'btn tiny' + (i === this.tier ? ' on' : '');
+      b.textContent = 'I'.repeat(i);
+      b.title = 'Stufe ' + i;
+      b.addEventListener('click', () => { this.tier = i; this.refreshColonyRow(); });
+      row.appendChild(b);
+    }
+    box.appendChild(row);
     return box;
   }
 
@@ -540,6 +577,22 @@ export class Toolbar {
         this.colonyId = colony.id;
         this.game.onColonyFounded(colony);
         this.signature = '';
+        return true;
+      }
+      case 'structure': {
+        if (dragging) return false;
+        const colony = world.colonies.get(this.colonyId);
+        if (!colony) return false;
+        const s = world.structures.create(colony, level.id, cell.x, cell.y,
+          t.structure, this.tier);
+        if (!s) {
+          bus.logEvent(CAT.BAU, t.name + ' laesst sich hier nicht setzen', { tick: world.tick });
+          return false;
+        }
+        // Der Sandkasten schaltet die Stufe auch gleich frei, sonst baut
+        // das Volk sie nie selbst nach.
+        const have = colony.unlockedTiers.get(t.structure) || 0;
+        if (this.tier > have) colony.unlockedTiers.set(t.structure, this.tier);
         return true;
       }
       case 'brood': {

@@ -25,11 +25,12 @@
  *   geladener Stand exakt so weiterlaeuft wie der gespeicherte.
  */
 
-import { VERSION } from '../config.js';
+import { VERSION, TRAIT_CFG } from '../config.js';
+import { antEffects } from './traits.js';
 import { LEVEL_KIND } from './levels.js';
 
 /** Formatversion. Wird beim Laden geprueft. */
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // Kodierung
@@ -118,7 +119,14 @@ const ANT_COLS = ['alive', 'level', 'colony', 'caste', 'state', 'x', 'y', 'px', 
   'dir', 'speed', 'hp', 'hpMax', 'hunger', 'age', 'carryType', 'carryNutrient',
   'carryAmount', 'carrySource', 'carryRef', 'targetX', 'targetY', 'timer',
   'phenoSize', 'phenoSpeed', 'phenoLife', 'transit', 'portalRef', 'portalCooldown',
-  'trip', 'lifespan', 'stuck', 'raidTarget', 'anim', 'hungerTol'];
+  'trip', 'lifespan', 'stuck', 'raidTarget', 'anim', 'hungerTol',
+  /**
+   * Phase 11: nur die Eigenschaften selbst und das Gift. Alles andere
+   * (Mut, Arbeits- und Tragfaktoren, Bitmaske) ist eine reine Funktion der
+   * beiden Eigenschaften und wird beim Laden neu gerechnet – das spart
+   * neun Float-Spalten und damit rund die Haelfte der Dateigroesse.
+   */
+  'trait1', 'trait2', 'poison'];
 
 const BROOD_COLS = ['alive', 'colony', 'level', 'x', 'y', 'stage', 'progress', 'fed',
   'hungry', 'target', 'carrier', 'pSize', 'pSpeed', 'pLife'];
@@ -206,6 +214,35 @@ function encodeColony(c) {
   return out;
 }
 
+/**
+ * Abgeleitete Eigenschaftswerte nach dem Laden neu berechnen. Exakt
+ * dieselbe Rechnung wie bei der Geburt, deshalb bitgleich.
+ */
+function rebuildAntTraits(ants) {
+  for (let i = 0; i < ants.high; i++) {
+    const t1 = ants.trait1[i], t2 = ants.trait2[i];
+    if (!t1 && !t2) {
+      ants.traitBits[i] = 0;
+      ants.courage[i] = TRAIT_CFG.BASE_COURAGE;
+      ants.workMul[i] = 1; ants.carryMul[i] = 1; ants.senseMul[i] = 1;
+      ants.trailMul[i] = 1; ants.nurseMul[i] = 1; ants.damageMul[i] = 1;
+      ants.buildMul[i] = 1; ants.loyalty[i] = 0;
+      continue;
+    }
+    const e = antEffects(t1, t2);
+    ants.traitBits[i] = e.bits;
+    ants.courage[i] = e.courage;
+    ants.workMul[i] = e.dig;
+    ants.carryMul[i] = e.carry;
+    ants.senseMul[i] = e.sense;
+    ants.trailMul[i] = e.trail;
+    ants.nurseMul[i] = e.nurse;
+    ants.damageMul[i] = e.damage;
+    ants.buildMul[i] = e.build;
+    ants.loyalty[i] = e.loyalty;
+  }
+}
+
 /** Gegenstueck zu encodeColony. Typisierte Felder bleiben typisiert. */
 function decodeColony(c, data) {
   for (const k of Object.keys(data)) {
@@ -235,7 +272,8 @@ export function saveWorld(world) {
     airVersion: l.airVersion, airCount: l.airCount,
     cells: packGrid(l.cells),
     meta: packGrid(l.meta),
-    variant: packGrid(l.variant),
+    // Statt der Variantenkarte nur ihr Seed – siehe Level.fillVariant.
+    variantSeed: l.variantSeed,
     view: { x: l.view.x, y: l.view.y, zoom: l.view.zoom, init: l.view.init },
   }));
 
@@ -301,15 +339,13 @@ export function saveWorld(world) {
     stability: { queue: world.stability.queue.map((e) => ({ ...e })),
       collapses: world.stability.collapses },
     combatKills: world.combat.kills,
+    /** Phase 11: Beziehungen zwischen den Voelkern und alle Bauwerke. */
+    diplomacy: world.diplomacy.toJSON(),
+    structures: world.structures.toJSON(),
     ants: poolToJSON(world.ants, ANT_COLS),
     brood: poolToJSON(world.brood, BROOD_COLS),
     creatures: poolToJSON(world.creatures, CREATURE_COLS),
   };
-}
-
-/** Speicherstand als Text (zum Herunterladen). */
-export function saveToString(world) {
-  return JSON.stringify(saveWorld(world));
 }
 
 // ---------------------------------------------------------------------------
@@ -345,7 +381,7 @@ export function loadWorld(world, data, deps) {
     const lvl = createLevel(ld);
     lvl.cells.set(unpackGrid(ld.cells, lvl.cells.length));
     lvl.meta.set(unpackGrid(ld.meta, lvl.meta.length));
-    lvl.variant.set(unpackGrid(ld.variant, lvl.variant.length));
+    lvl.fillVariant(ld.variantSeed || 0);
     lvl.abandoned = !!ld.abandoned;
     lvl.airVersion = ld.airVersion;
     lvl.airCount = ld.airCount;
@@ -387,6 +423,7 @@ export function loadWorld(world, data, deps) {
 
   // --- Einheiten ---------------------------------------------------------
   poolFromJSON(world.ants, data.ants, ANT_COLS);
+  rebuildAntTraits(world.ants);
   poolFromJSON(world.brood, data.brood, BROOD_COLS);
   poolFromJSON(world.creatures, data.creatures, CREATURE_COLS);
 
@@ -442,6 +479,9 @@ export function loadWorld(world, data, deps) {
     world.stability.collapses = data.stability.collapses;
   }
   if (data.combatKills !== undefined) world.combat.kills = data.combatKills;
+  world.diplomacy.fromJSON(data.diplomacy);
+  // Bauwerke NACH den Kolonien, weil create() deren Boni neu zusammenrechnet
+  world.structures.fromJSON(data.structures);
   world.ants.rebuildBuckets(world.levels);
   /**
    * Distanzfelder sofort und VOLLSTAENDIG neu rechnen, nicht ueber das

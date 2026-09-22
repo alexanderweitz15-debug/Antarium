@@ -13,7 +13,7 @@
  * Kolonie-ID gestaffelt.
  */
 
-import { NUTRITION, NUTRIENT, EVO, DAYNIGHT, BROOD as BROOD_CFG } from '../config.js';
+import { NUTRITION, NUTRIENT, EVO, DAYNIGHT, BUILD, BROOD as BROOD_CFG } from '../config.js';
 import { CASTE, casteDef } from './castes.js';
 import { NEST_CELL, CHAMBER } from './nest.js';
 
@@ -42,6 +42,8 @@ export function initNutrition(colony) {
 
 /** Nahrung einlagern (Ameise liefert ab). */
 export function storeFood(colony, nutrientIdx, amount, profile) {
+  // Jede Fuhre bringt ein wenig Forschung: das Volk lernt beim Arbeiten.
+  colony.research = (colony.research || 0) + amount * BUILD.POINTS_PER_FOOD;
   // Eine Fuhre traegt anteilig alle drei Naehrstoffe des Profils.
   for (let n = 0; n < N; n++) {
     const part = amount * profile[n];
@@ -64,7 +66,9 @@ export function updateCapacity(colony, world) {
     const c = lvl.cells, m = lvl.meta;
     for (let i = 0; i < c.length; i++) if (c[i] === NEST_CELL.CHAMBER && m[i] === CHAMBER.STORE) cells++;
   }
-  const base = NUTRITION.STORE_BASE + cells * NUTRITION.STORE_PER_CELL;
+  // Speicherbauten vergroessern das Lager zusaetzlich zu den Kammern
+  const base = NUTRITION.STORE_BASE + cells * NUTRITION.STORE_PER_CELL
+    + (colony.storeBonus || 0);
   const repletes = colony.population[CASTE.REPLETE] || 0;
   colony.capacity[NUTRIENT.SUGAR] = base + repletes * 60;
   colony.capacity[NUTRIENT.PROTEIN] = base;

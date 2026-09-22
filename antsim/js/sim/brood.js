@@ -16,6 +16,7 @@ import { CASTE, casteDef } from './castes.js';
 import { NEST_CELL, CHAMBER } from './nest.js';
 import { ANT_STATE } from './ants.js';
 import { bus, CAT } from './events.js';
+import { rollAntTraits } from './traits.js';
 
 export const STAGE = { EGG: 0, LARVA: 1, PUPA: 2 };
 export const STAGE_NAMES = ['Ei', 'Larve', 'Puppe'];
@@ -121,9 +122,18 @@ export class BroodPool {
       const colony = world.colonies.get(this.colony[i]);
       if (!colony || !colony.alive) { this.kill(i); continue; }
 
+      /**
+       * Brutstuben beschleunigen die Reifung im Umkreis. Der Wert wird nur
+       * selten geholt, weil die Abfrage ueber alle Bauwerke laeuft – bei
+       * hoechstens vierzig je Volk ist das billig genug.
+       */
+      const warm = (world.tick & 15) === 0 && world.structures
+        ? world.structures.broodSpeed(this.level[i], this.x[i], this.y[i], colony.id) : 1;
+      const step = warm > 1 ? warm : 1;
+
       switch (this.stage[i]) {
         case STAGE.EGG:
-          this.progress[i]++;
+          this.progress[i] += step;
           if (this.progress[i] >= BROOD.EGG_TICKS) {
             this.stage[i] = STAGE.LARVA;
             this.progress[i] = 0;
@@ -152,7 +162,7 @@ export class BroodPool {
           }
           // Fortschritt nur, soweit die Larve gefuettert wurde
           const ratio = this.fed[i] / BROOD.LARVA_PROTEIN;
-          this.progress[i] += ratio > 0.02 ? 1 : 0;
+          this.progress[i] += ratio > 0.02 ? step : 0;
           this.hungry[i]++;
           if (this.hungry[i] > BROOD.LARVA_STARVE_TICKS) {
             // Verhungerte Larve: die Kolonie frisst sie, Protein kommt zurueck
@@ -169,7 +179,7 @@ export class BroodPool {
         }
 
         case STAGE.PUPA:
-          this.progress[i]++;
+          this.progress[i] += step;
           if (this.progress[i] >= BROOD.PUPA_TICKS) {
             this._hatch(i, ctx);
           }
@@ -192,10 +202,13 @@ export class BroodPool {
     const speed = (this.pSpeed[i] + colony.pheno.speed) * 0.5;
     const life = (this.pLife[i] + colony.pheno.life) * 0.5;
 
+    const traits = rollAntTraits(ctx.rng, colony);
     const id = world.ants.spawn({
       levelId: level.id, x: this.x[i], y: this.y[i], colonyId: colony.id,
       casteId: def.id, dir: ctx.rng.angle(), state: ANT_STATE.EXPLORE,
       timer: ctx.rng.intRange(60, 300), hungerTol: ctx.rng.float(),
+      // Jede geschluepfte Ameise wuerfelt ihren eigenen Charakter
+      trait1: traits[0], trait2: traits[1],
     });
     if (id >= 0) {
       const a = world.ants;

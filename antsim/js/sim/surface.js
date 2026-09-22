@@ -111,6 +111,14 @@ export function generateSurface(level, rng, gen) {
   const seedDetail = rng.int(1 << 30);
   const seedScatter = rng.int(1 << 30);
   const seedVariant = rng.int(1 << 30);
+  /**
+   * Der Variantenseed wird an der Ebene gemerkt. Die Variantenkarte ist
+   * eine reine Funktion von (x, y, seedVariant) und wird nie veraendert –
+   * deshalb muss sie nicht in den Speicherstand, sondern laesst sich dort
+   * aus dieser einen Zahl neu rechnen. Das spart je Welt mehrere hundert
+   * Kilobyte.
+   */
+  level.variantSeed = seedVariant;
 
   const { w, h, cells, variant } = level;
 

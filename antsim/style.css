@@ -17,6 +17,11 @@
   --radius: 4px;
   /** Hoehe der Kopfzeile; wird von main.js an den Umbruch angepasst. */
   --barh: 34px;
+  /** Breite der rechten Spalte. Alles, was daneben liegt (Einblendungen,
+      Ereignisfenster), richtet sich danach – sonst ueberdecken sie sich. */
+  --rightw: 288px;
+  /** Breite der linken Werkzeugspalte. */
+  --leftw: 190px;
   --font: 11px/1.45 "DejaVu Sans Mono", "SF Mono", Menlo, Consolas, monospace;
 }
 
@@ -168,7 +173,7 @@ html, body {
 #left {
   position: absolute;
   top: calc(var(--barh) + 8px); left: 8px; bottom: 150px;
-  width: 190px;
+  width: var(--leftw);
   display: flex;
   flex-direction: column;
   pointer-events: none;
@@ -227,19 +232,23 @@ html, body {
 #right {
   position: absolute;
   top: calc(var(--barh) + 8px); right: 8px; bottom: 216px;
-  width: 260px;
+  /* Seit Phase 11 stehen hier Charakter, Baustoffe, Bauwerke und
+     Beziehungen – 260 px waren dafuer zu eng, alles brach um. */
+  width: var(--rightw);
   display: flex;
   flex-direction: column;
   gap: 8px;
   pointer-events: none;
 }
-#panel-colonies { flex: 0 0 auto; max-height: 40%; }
+#panel-colonies { flex: 1 1 auto; min-height: 160px; }
 #panel-colonies .panel-body { overflow-y: auto; }
-#panel-legend { flex: 1 1 auto; min-height: 120px; }
+#panel-legend { flex: 0 1 auto; min-height: 90px; max-height: 38%; }
 
 #panel-log {
   position: absolute;
-  left: 206px; right: 200px; bottom: 8px;
+  left: calc(var(--leftw) + 16px);
+  right: calc(var(--rightw) - 60px);
+  bottom: 8px;
   height: 134px;
 }
 #log { flex: 1 1 auto; }
@@ -251,7 +260,12 @@ html, body {
 }
 
 /* --------------------------------------------------------------- Kolonie */
-.colony { margin-bottom: 6px; }
+.colony {
+  margin-bottom: 7px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(43,52,57,.6);
+}
+.colony:last-child { border-bottom: 0; }
 .colony-head {
   display: flex; align-items: center; gap: 6px;
   cursor: pointer; padding: 2px 0;
@@ -263,7 +277,7 @@ html, body {
 .castes { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 0 16px; }
 .caste-chip { display: flex; align-items: center; gap: 3px; color: var(--text-dim); }
 .caste-chip img { width: 14px; height: 14px; image-rendering: pixelated; }
-.bars { margin: 3px 0 0 16px; display: grid; grid-template-columns: 52px 1fr; gap: 2px 6px; align-items: center; }
+.bars { margin: 3px 0 0 16px; display: grid; grid-template-columns: 58px 1fr auto; gap: 2px 6px; align-items: center; }
 .bar-label { color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bar-track { height: 6px; background: #222a2c; border-radius: 2px; overflow: hidden; }
 .bar-fill { height: 100%; background: var(--accent); }
@@ -381,7 +395,7 @@ html, body {
 /* ------------------------------------------------------------ Kampfalarm */
 #toasts {
   position: absolute;
-  top: calc(var(--barh) + 8px); right: 276px;
+  top: calc(var(--barh) + 8px); right: calc(var(--rightw) + 16px);
   display: flex; flex-direction: column; gap: 5px;
   pointer-events: none;
   width: 250px;
@@ -405,9 +419,17 @@ html, body {
 /* -------------------------------------------------- Forschung / Statistik */
 #panel-research {
   position: absolute;
-  left: 206px; top: calc(var(--barh) + 8px); bottom: 150px;
-  width: 310px;
+  left: calc(var(--leftw) + 16px); top: calc(var(--barh) + 8px); bottom: 150px;
+  /* Zwei Spalten: seit Phase 11 stehen hier zusaetzlich Charakter und
+     Forschungsbaum, und untereinander wurde das eine endlose Rolle. */
+  width: 620px;
 }
+#research {
+  column-count: 2;
+  column-gap: 12px;
+  column-rule: 1px solid var(--line);
+}
+#research .tool-group { break-inside: avoid; }
 #panel-stats {
   position: absolute;
   left: 50%; top: calc(var(--barh) + 8px); bottom: 150px;
@@ -446,7 +468,7 @@ html, body {
 }
 
 /* Naehrstoffbalken */
-.nut { display: grid; grid-template-columns: 44px 1fr 34px; gap: 1px 5px; align-items: center; margin: 2px 0 0 16px; }
+.nut { display: grid; grid-template-columns: 58px 1fr 38px; gap: 1px 5px; align-items: center; margin: 2px 0 0 16px; }
 .nut-label { color: var(--text-dim); }
 .nut-track { height: 6px; background: #222a2c; border-radius: 2px; overflow: hidden; position: relative; }
 .nut-fill { height: 100%; }
@@ -478,6 +500,23 @@ html, body {
 .boot-title { font-size: 20px; letter-spacing: .3em; color: var(--accent); margin-bottom: 10px; }
 #boot-msg { color: var(--text-dim); max-width: 520px; white-space: pre-wrap; }
 #boot-msg.error { color: var(--warn); text-align: left; }
+
+/* ------------------------------------------------------- Kopfzeile fein */
+.bar .group {
+  display: flex; gap: 2px;
+  padding: 1px 4px;
+  border-left: 1px solid var(--line);
+}
+.bar .group:first-of-type { border-left: 0; }
+.crumb.clock {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1px 6px;
+}
+.btn.toggle.on {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
 
 /* ------------------------------------------------- Regler fuer Eingriffe */
 .slider-row {
@@ -517,3 +556,60 @@ html, body {
 }
 .legend-hoverable { cursor: crosshair; }
 .legend-hoverable:hover { background: rgba(255,224,138,.10); }
+.dim { color: var(--text-dim); }
+
+/* --------------------------------------------- Charakter, Bau, Diplomatie */
+.queen-traits, .mat-row {
+  display: flex; flex-wrap: wrap; gap: 3px;
+  margin: 3px 0 3px 16px;
+}
+.trait-chip, .mat-chip, .build-chip, .rel-chip {
+  font-size: 10px; line-height: 1.5;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.trait-chip { color: var(--text); border-color: #3a4a52; }
+.trait-haltung { border-color: #d9604a; color: #e4a196; }
+.trait-volk    { border-color: #6ec177; color: #a8dcae; }
+.mat-chip { display: inline-flex; align-items: center; gap: 3px; }
+.mat-chip i { width: 7px; height: 7px; display: inline-block; border-radius: 1px; }
+.build-chip { color: var(--accent-2); border-color: #4a412a; }
+.rel-chip { background: transparent; }
+.tool.struct .glyph { color: #4f9ad8; }
+
+/* ------------------------------------------------------- Forschungsbaum */
+.tech-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 3px;
+  margin: 3px 0;
+}
+.tech {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 4px; padding: 3px 5px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.tech b { font-weight: 600; }
+.tech span { font-variant-numeric: tabular-nums; opacity: .7; }
+.tech.done { border-color: var(--accent); color: var(--accent); background: rgba(110,193,119,.10); }
+.tech.open { border-color: var(--accent-2); color: var(--text); }
+.tech.locked { opacity: .5; cursor: not-allowed; }
+.tech:hover:not(.locked) { border-color: var(--text); }
+
+/* --------------------------------------------------- Beziehungs-Matrix */
+.rel-table { border-collapse: collapse; margin: 3px 0 6px 0; }
+.rel-table th, .rel-table td {
+  width: 20px; height: 18px; text-align: center;
+  border: 1px solid var(--line);
+  font-weight: 600;
+}
+.rel-table .swatch { display: inline-block; }
+.rel-table .rel-self { background: #171d20; }

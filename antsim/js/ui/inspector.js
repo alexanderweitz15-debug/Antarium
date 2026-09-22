@@ -11,6 +11,7 @@ import { SURFACE_CELL_DEFS } from '../sim/surface.js';
 import { NEST_CELL_DEFS, NEST_CELL, CHAMBER_DEFS } from '../sim/nest.js';
 import { casteDef } from '../sim/castes.js';
 import { ANT_STATE_LABEL, CARRY_LABEL } from '../sim/ants.js';
+import { traitInfo, traitNames } from '../sim/traits.js';
 import { SPECIES_LIST, CSTATE_LABEL } from '../sim/creatures.js';
 import { STAGE_NAMES } from '../sim/brood.js';
 import { NUTRIENT_NAMES } from '../config.js';
@@ -184,7 +185,20 @@ export class Inspector {
           + a.carryAmount[i].toFixed(0) + ')' : '') : '-'],
       ['Lebensdauer', a.lifespan[i] ? (a.age[i] / 30).toFixed(0) + ' / ' + (a.lifespan[i] / 30).toFixed(0) + ' s' : 'unbegrenzt'],
     ];
+    // Eigenschaften dieser einen Ameise (Phase 11)
+    const traits = traitInfo([a.trait1[i], a.trait2[i]]);
+    if (traits.length) {
+      rows.push(['Eigenschaften', traits.map((t) => '<b>' + esc(t.name) + '</b>').join(', ')]);
+      for (const t of traits) rows.push(['', '<span class="dim">' + esc(t.desc) + '</span>']);
+    } else {
+      rows.push(['Eigenschaften', '<span class="dim">keine</span>']);
+    }
+    rows.push(['Mut', (a.courage[i] * 100).toFixed(0) + ' %'
+      + (a.poison[i] > 0 ? ' \u00b7 <span style="color:#9b59d0">vergiftet</span>' : '')]);
+
     if (colony && colony.balanceArr) {
+      rows.push(['Volk', '<b>' + esc(colony.name) + '</b> \u00b7 '
+        + esc(traitNames(colony.queenTraits))]);
       rows.push(['Bilanz', NUTRIENT_NAMES.map((n, k) => n[0] + ' ' + colony.balanceArr[k].toFixed(2)).join(' ')]);
       rows.push(['Stress', colony.stress.toFixed(2)]);
       if (colony.genome) rows.push(['Genom', geneSummary(colony.genome)]);
@@ -227,4 +241,11 @@ export class Inspector {
 
 function tr(k, v) {
   return '<tr><td style="color:#8b9a95;padding-right:6px">' + k + '</td><td>' + v + '</td></tr>';
+}
+
+/** Text fuer HTML entschaerfen. */
+function esc(t) {
+  return String(t).replace(/[&<>"]/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
+  }[c]));
 }

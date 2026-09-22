@@ -11,7 +11,13 @@
  * das Forschungsmenue veraendert die REGELN.
  */
 
-import { EVO, FOOD, CREATURES, RESEARCH, GENES, CASTE_UNLOCK, NUTRIENT_NAMES } from '../config.js';
+import {
+  EVO, FOOD, CREATURES, RESEARCH, GENES, CASTE_UNLOCK, NUTRIENT_NAMES, RESEARCH_TREE,
+} from '../config.js';
+import {
+  QUEEN_TRAITS, TRAIT_LIST, traitInfo, traitNames, applyQueenTraits, rollQueenTraits,
+} from '../sim/traits.js';
+import { RESEARCH_BY_KEY } from '../sim/structures.js';
 import { CASTE_BY_KEY, CASTE_DEFS } from '../sim/castes.js';
 import { mutationForecast, unlockedCastes } from '../sim/genome.js';
 import { bus, CAT } from '../sim/events.js';
@@ -91,6 +97,18 @@ export class ResearchPanel {
     pick.appendChild(this.colonyRow);
     this.el.appendChild(pick);
 
+    // --- Charakter der Koenigin -------------------------------------------
+    const ch = section('Charakter der Koenigin');
+    this.charBox = document.createElement('div');
+    ch.appendChild(this.charBox);
+    this.el.appendChild(ch);
+
+    // --- Forschungsbaum ----------------------------------------------------
+    const tech = section('Forschung und Bauwerke');
+    this.techBox = document.createElement('div');
+    tech.appendChild(this.techBox);
+    this.el.appendChild(tech);
+
     // --- Genom-Editor ------------------------------------------------------
     const gen = section('Genom-Editor');
     this.geneBox = document.createElement('div');
@@ -143,8 +161,149 @@ export class ResearchPanel {
       this._buildGenes(colony);
       this._buildCastes(colony);
     }
+    this._updateCharacter(colony);
+    this._updateTech(colony);
     this._updateGenes(colony);
     this._updateForecast(colony);
+  }
+
+  /**
+   * Charakter der Koenigin: anzeigen und gezielt neu wuerfeln.
+   * Neu wuerfeln aendert das Volk sofort spuerbar – das ist der Punkt: man
+   * soll ausprobieren koennen, wie sich eine Kriegstreiberin anfuehlt.
+   */
+  _updateCharacter(colony) {
+    if (!colony) { this.charBox.textContent = ''; return; }
+    const key = colony.id + ':' + (colony.queenTraits || []).join(',');
+    if (key === this._charKey) return;
+    this._charKey = key;
+    this.charBox.textContent = '';
+
+    const list = document.createElement('div');
+    list.className = 'queen-traits';
+    for (const t of traitInfo(colony.queenTraits || [])) {
+      const chip = document.createElement('span');
+      chip.className = 'trait-chip trait-' + t.group;
+      chip.textContent = t.name;
+      chip.title = t.desc;
+      list.appendChild(chip);
+    }
+    this.charBox.appendChild(list);
+
+    const desc = document.createElement('div');
+    desc.className = 'tool-hint';
+    desc.innerHTML = traitInfo(colony.queenTraits || [])
+      .map((t) => '<b>' + t.name + ':</b> ' + t.desc).join('<br>') || 'ohne Besonderheit';
+    this.charBox.appendChild(desc);
+
+    const row = document.createElement('div');
+    row.className = 'tool-row wrap';
+    const reroll = document.createElement('button');
+    reroll.className = 'btn';
+    reroll.textContent = 'Charakter neu wuerfeln';
+    reroll.title = 'Wirkt sofort auf das ganze Volk';
+    reroll.addEventListener('click', () => {
+      applyQueenTraits(colony, rollQueenTraits(this.world.rngSim));
+      this._log(colony.name + ': neuer Charakter – ' + traitNames(colony.queenTraits));
+      this._charKey = '';
+      this.refresh(true);
+    });
+    row.appendChild(reroll);
+
+    for (const t of QUEEN_TRAITS) {
+      const b = document.createElement('button');
+      b.className = 'btn tiny'
+        + ((colony.queenTraits || []).includes(t.id) ? ' on' : '');
+      b.textContent = t.name;
+      b.title = t.desc;
+      b.addEventListener('click', () => {
+        const cur = new Set(colony.queenTraits || []);
+        if (cur.has(t.id)) cur.delete(t.id);
+        else {
+          // Widersprueche entfernen, sonst heben sich Zuege gegenseitig auf
+          for (const other of [...cur]) {
+            const o = TRAIT_LIST[other];
+            if (!o) continue;
+            if ((o.opposes || []).includes(t.key) || (t.opposes || []).includes(o.key)) {
+              cur.delete(other);
+            }
+          }
+          cur.add(t.id);
+        }
+        applyQueenTraits(colony, [...cur]);
+        this._charKey = '';
+        this.refresh(true);
+      });
+      row.appendChild(b);
+    }
+    this.charBox.appendChild(row);
+  }
+
+  /** Forschungsbaum: Stand anzeigen und einzelne Stufen freischalten. */
+  _updateTech(colony) {
+    if (!colony || !colony.researched) { this.techBox.textContent = ''; return; }
+    const key = colony.id + ':' + colony.researched.size + ':' + (colony.structureCount || 0)
+      + ':' + Math.round(colony.research);
+    if (key === this._techKey) return;
+    this._techKey = key;
+    this.techBox.textContent = '';
+
+    const grid = document.createElement('div');
+    grid.className = 'tech-grid';
+    for (const r of RESEARCH_TREE) {
+      const done = colony.researched.has(r.key);
+      const open = !done && r.needs.every((n) => colony.researched.has(n));
+      const cell = document.createElement('button');
+      cell.className = 'tech' + (done ? ' done' : (open ? ' open' : ' locked'));
+      cell.innerHTML = '<b>' + r.name + '</b><span>' + r.cost + '</span>';
+      cell.title = r.desc + (r.needs.length ? '\nBraucht: ' + r.needs.join(', ') : '')
+        + '\nSchaltet frei: ' + r.unlocks.join(', ');
+      cell.addEventListener('click', () => {
+        if (done) return;
+        // Voraussetzungen gleich mit freischalten – sonst haengt der Baum
+        const add = (k) => {
+          const def = RESEARCH_BY_KEY.get(k);
+          if (!def || colony.researched.has(k)) return;
+          for (const n of def.needs) add(n);
+          colony.researched.add(k);
+          this.world.structures._applyUnlocks(colony, def);
+        };
+        add(r.key);
+        this._log(colony.name + ': ' + r.name + ' freigeschaltet');
+        this._techKey = '';
+        this.refresh(true);
+      });
+      grid.appendChild(cell);
+    }
+    this.techBox.appendChild(grid);
+
+    const info = document.createElement('div');
+    info.className = 'tool-hint';
+    const next = this.world.structures.nextResearch(colony);
+    info.textContent = next
+      ? 'Naechste Stufe: ' + next.name + ' (' + Math.round(colony.research) + '/' + next.cost + ')'
+      : 'Alles erforscht.';
+    this.techBox.appendChild(info);
+
+    const builds = this.world.structures.ofColony(colony.id);
+    const bl = document.createElement('div');
+    bl.className = 'mat-row';
+    if (!builds.length) {
+      bl.innerHTML = '<span class="tool-hint">Noch kein Bauwerk errichtet.</span>';
+    } else {
+      const byKey = new Map();
+      for (const st of builds) {
+        const k = st.def.name + ' ' + 'I'.repeat(st.tier);
+        byKey.set(k, (byKey.get(k) || 0) + 1);
+      }
+      for (const [k, n] of byKey) {
+        const chip = document.createElement('span');
+        chip.className = 'build-chip';
+        chip.textContent = k + (n > 1 ? ' x' + n : '');
+        bl.appendChild(chip);
+      }
+    }
+    this.techBox.appendChild(bl);
   }
 
   _buildColonyRow(colonies) {

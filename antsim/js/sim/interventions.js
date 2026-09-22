@@ -25,10 +25,63 @@ import { SPECIES_LIST } from './creatures.js';
 import { bus, CAT } from './events.js';
 
 /**
+ * Welches Volk steht an dieser Stelle – und ist die Koenigin dabei?
+ *
+ * Duefte wirken auf das, was tatsaechlich in Reichweite ist. Das ist der
+ * Unterschied zwischen "die Arbeiterinnen sind gereizt" und "die Koenigin
+ * erklaert den Krieg": man muss die Koenigin treffen, und die sitzt in
+ * ihrer Kammer tief im Nest.
+ */
+function findColonyAt(world, level, x, y, radius) {
+  const ants = world.ants;
+  const r2 = radius * radius;
+  const counts = new Map();
+  let queenColony = null;
+  for (let i = 0; i < ants.high; i++) {
+    if (!ants.alive[i] || ants.level[i] !== level.id) continue;
+    const dx = ants.x[i] - x, dy = ants.y[i] - y;
+    if (dx * dx + dy * dy > r2) continue;
+    const cid = ants.colony[i];
+    counts.set(cid, (counts.get(cid) || 0) + 1);
+    if (ants.caste[i] === CASTE.QUEEN) queenColony = cid;
+  }
+  if (queenColony !== null) {
+    return { colony: world.colonies.get(queenColony), queen: true };
+  }
+
+  /**
+   * Zweiter Anlauf: In der eigenen NEST-Ebene reicht es, in die Naehe der
+   * Koeniginkammer zu treffen. Auf den Punkt genau zu zielen war im Test
+   * zu fummelig – die Koenigin wandert in ihrer Kammer umher, und ein
+   * Fehlschlag von drei Zellen fuehlt sich wie ein Fehler des Spiels an.
+   */
+  if (level.kind === LEVEL_KIND.NEST && level.colonyId >= 0) {
+    const own = world.colonies.get(level.colonyId);
+    if (own && own.alive && own.queenAnt >= 0 && ants.alive[own.queenAnt]
+        && ants.level[own.queenAnt] === level.id) {
+      const dx = ants.x[own.queenAnt] - x, dy = ants.y[own.queenAnt] - y;
+      const wide = radius * GODMODE.QUEEN_SCENT_SLACK;
+      if (dx * dx + dy * dy <= wide * wide) return { colony: own, queen: true };
+    }
+  }
+  let bestId = -1, bestN = 0;
+  for (const [cid, n] of counts) if (n > bestN) { bestN = n; bestId = cid; }
+  if (bestId < 0) {
+    // Niemand da: notfalls das Volk, dem diese Nest-Ebene gehoert
+    const own = world.colonies.get(level.colonyId);
+    return { colony: own && own.alive ? own : null, queen: false };
+  }
+  return { colony: world.colonies.get(bestId), queen: false };
+}
+
+/**
  * Tabelle aller Eingriffe.
  *   where : 'surface' | 'nest' | 'both' | 'colony' (wirkt auf eine Kolonie)
  *   cost  : goettliche Energie im Herausforderungsmodus
  */
+/** Markierung in level.meta fuer Wasser, das eine Flut gebracht hat. */
+export const FLOOD_META = 251;
+
 export const INTERVENTIONS = [
   {
     key: 'reinforce', name: 'Verstaerkung', cost: 20, where: 'colony', icon: 'ant_soldier',
@@ -98,6 +151,7 @@ export const INTERVENTIONS = [
           if (c === SURFACE_CELL.STONE) continue;
           if (world.portals.at(level.id, cx, cy)) continue;
           level.set(cx, cy, SURFACE_CELL.WATER);
+          level.setMeta(cx, cy, FLOOD_META);
           cells++;
         }
       }
@@ -460,6 +514,61 @@ export const INTERVENTIONS = [
     },
   },
   {
+    key: 'warscent', name: 'Kriegsduft', cost: 26, where: 'both', icon: 'glyph:\u2694',
+    desc: 'Auf die KOENIGIN gesprueht erklaert ihr Volk einem Nachbarn den Krieg und'
+      + ' schickt immer groessere Wellen. Trifft der Duft nur Arbeiterinnen, macht er'
+      + ' sie bloss eine Weile angriffslustig.',
+    fx: FX.GORE, fxCount: 14,
+    apply(world, level, x, y, o) {
+      const hit = findColonyAt(world, level, x, y, o.radius);
+      if (!hit.colony) {
+        log(world, CAT.KAMPF, 'Kriegsduft verweht – hier ist kein Volk', level.id, x, y);
+        return 0;
+      }
+      const res = world.diplomacy.incite(hit.colony, hit.queen, o.power, world.rngSim);
+      if (!res.ok) {
+        log(world, CAT.KAMPF, 'Kriegsduft ohne Wirkung: ' + res.reason, level.id, x, y);
+        return 0;
+      }
+      if (res.target) {
+        log(world, CAT.KAMPF, hit.colony.name + ' zieht gegen ' + res.target.name
+          + ' in den Krieg', level.id, x, y);
+      } else {
+        log(world, CAT.KAMPF, hit.colony.name + ': die Arbeiterinnen sind gereizt'
+          + ' (die Koenigin war nicht in Reichweite)', level.id, x, y);
+      }
+      return 1;
+    },
+  },
+  {
+    key: 'peacescent', name: 'Friedensduft', cost: 22, where: 'both', icon: 'glyph:\u262E',
+    desc: 'Beendet alle Feindschaften des getroffenen Volkes. Bei einer blutruenstigen'
+      + ' Koenigin wirkungslos.',
+    apply(world, level, x, y, o) {
+      const hit = findColonyAt(world, level, x, y, o.radius);
+      if (!hit.colony) return 0;
+      const res = world.diplomacy.pacify(hit.colony, o.power);
+      log(world, CAT.KAMPF, res.ok
+        ? hit.colony.name + ' legt die Waffen nieder (' + res.count + ' Beziehungen)'
+        : 'Friedensduft ohne Wirkung: ' + res.reason, level.id, x, y);
+      return res.ok ? 1 : 0;
+    },
+  },
+  {
+    key: 'allyscent', name: 'Buendnisduft', cost: 24, where: 'both', icon: 'glyph:\u269C',
+    desc: 'Schmiedet ein Buendnis zwischen dem getroffenen Volk und einem anderen.'
+      + ' Verbuendete greifen einander nie an.',
+    apply(world, level, x, y, o) {
+      const hit = findColonyAt(world, level, x, y, o.radius);
+      if (!hit.colony) return 0;
+      const res = world.diplomacy.ally(hit.colony, o.power, world.rngSim);
+      if (!res.ok) return 0;
+      log(world, CAT.KAMPF, hit.colony.name + ' und ' + res.target.name
+        + ' verbuenden sich', level.id, x, y);
+      return 1;
+    },
+  },
+  {
     key: 'fortify', name: 'Sofortbau', cost: 18, where: 'nest', icon: 'cell:reinforced',
     desc: 'Errichtet sofort verstaerkte Waende im Pinselbereich.',
     apply(world, level, x, y, o) {
@@ -550,6 +659,7 @@ function floodNest(world, nest, ex, ey, depth) {
         && c !== NEST_CELL.TRAP) continue;
     if (c !== NEST_CELL.ENTRANCE) {
       nest.set(x, y, NEST_CELL.WATER);
+      nest.setMeta(x, y, FLOOD_META);
       filled++;
     }
     // Wasser laeuft zuerst nach unten, dann zur Seite
@@ -573,17 +683,24 @@ export function updateInterventions(world) {
   if (w.rain > 0) w.rain--;
   if (world.shake > 0) world.shake = Math.max(0, world.shake - 0.02);
 
-  // Wasser trocknet langsam wieder ab
+  /**
+   * Wasser trocknet langsam ab – aber NUR das, was eine Flut hinterlassen
+   * hat. Die erste Fassung trocknete jede Wasserzelle, also auch die
+   * Pfuetzen aus dem Weltgenerator: nach zwanzig Minuten war jede Karte
+   * staubtrocken, Lehm war nicht mehr zu gewinnen und die Aue-Vorlage
+   * verlor ihren Charakter. Flutwasser traegt deshalb eine Markierung.
+   */
   if (world.tick % GODMODE.WATER_DRY_INTERVAL === 0) {
     for (const level of world.levels.levels) {
       const waterCell = level.kind === LEVEL_KIND.SURFACE ? SURFACE_CELL.WATER : NEST_CELL.WATER;
       const dryTo = level.kind === LEVEL_KIND.SURFACE ? SURFACE_CELL.DIRT : NEST_CELL.TUNNEL;
       if (w.rain > 0 && level.kind === LEVEL_KIND.SURFACE) continue;
-      const cells = level.cells;
+      const cells = level.cells, meta = level.meta;
       for (let i = 0; i < cells.length; i++) {
-        if (cells[i] !== waterCell) continue;
+        if (cells[i] !== waterCell || meta[i] !== FLOOD_META) continue;
         if (!world.rngSim.chance(GODMODE.WATER_DRY_CHANCE)) continue;
         const x = i % level.w, y = (i / level.w) | 0;
+        level.setMeta(x, y, 0);
         level.set(x, y, dryTo);
       }
     }

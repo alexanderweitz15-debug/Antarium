@@ -13,6 +13,7 @@
 
 import { WORLD, LIMITS } from '../config.js';
 import { SpatialHash } from './spatial.js';
+import { hash2i } from '../rng.js';
 
 export const LEVEL_KIND = {
   SURFACE: 0, // Draufsicht
@@ -45,6 +46,8 @@ export class Level {
     this.meta = new Uint8Array(n);
     /** Visuelle Variante pro Zelle (Rauschen, einmalig erzeugt). */
     this.variant = new Uint8Array(n);
+    /** Seed, aus dem variant erzeugt wurde (siehe fillVariant). */
+    this.variantSeed = 0;
 
     /** Tabelle: Zelltyp -> 1, wenn unpassierbar. Wird von setCellDefs gefuellt. */
     this.solidTable = new Uint8Array(256);
@@ -87,6 +90,19 @@ export class Level {
     this.solidTable.fill(1); // unbekannte Typen gelten als solide
     for (let i = 0; i < defs.length; i++) {
       this.solidTable[defs[i].id] = defs[i].solid ? 1 : 0;
+    }
+  }
+
+  /**
+   * Variantenkarte aus dem Seed neu erzeugen. Identisch zu dem, was die
+   * Generatoren tun – wird beim Laden eines Speicherstands gebraucht.
+   */
+  fillVariant(seed) {
+    this.variantSeed = seed;
+    const v = this.variant, w = this.w, h = this.h;
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) v[row + x] = hash2i(x, y, seed) & 0xff;
     }
   }
 

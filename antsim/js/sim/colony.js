@@ -59,6 +59,8 @@ export class Colony {
     this.diggers = 0;
     this.nurses = 0;
     this.foragers = 0;
+    /** Ameisen, die gerade an einem Bauwerk arbeiten. */
+    this.builders = 0;
   }
 
   get name() { return this.baseName + ' ' + roman(this.generation); }
@@ -72,6 +74,7 @@ export class Colony {
     this.diggers = 0;
     this.nurses = 0;
     this.foragers = 0;
+    this.builders = 0;
   }
 
   countAnt(casteId, levelId, state) {

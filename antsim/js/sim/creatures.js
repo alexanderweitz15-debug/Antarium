@@ -19,7 +19,7 @@
  * Beutemangel -> Zusammenbruch.
  */
 
-import { CREATURES, LIFE, PHERO } from '../config.js';
+import { CREATURES, LIFE, PHERO, BUILD } from '../config.js';
 import { LEVEL_KIND } from './levels.js';
 import { SURFACE_CELL } from './surface.js';
 import { ANT_STATE, CARRY } from './ants.js';
@@ -239,7 +239,21 @@ export class Creatures {
         const courage = CREATURES.SWARM_COURAGE;
         if (swarm >= courage) {
           this.hp[i] -= (swarm - courage + 1) * CREATURES.ANT_DAMAGE;
-          if (this.hp[i] <= 0) { this._die(i, level, ctx, true); continue; }
+          if (this.hp[i] <= 0) {
+            /**
+             * Chitin. Ein erlegtes Tier ist nicht nur Protein, sondern auch
+             * Baustoff – das macht die Jagd fuer eine bauende Kolonie doppelt
+             * lohnend und gibt dem Panzerei-Zweig eine natuerliche Quelle.
+             */
+            const killer = ctx.colonies.get(ants.colony[nearest]);
+            if (killer && killer.knownMaterials && killer.knownMaterials.has('chitin')
+                && rng.chance(CREATURES.CHITIN_DROP)) {
+              killer.stores.chitin = Math.min(BUILD.MATERIAL_CAP,
+                (killer.stores.chitin || 0) + Math.round(sp.size * 2));
+            }
+            this._die(i, level, ctx, true);
+            continue;
+          }
           // Ab doppelter Schwelle wird es der Kreatur zu bunt
           if (swarm >= courage * 2 && nearest >= 0) {
             this.state[i] = CSTATE.FLEE;

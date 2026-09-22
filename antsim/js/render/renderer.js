@@ -26,6 +26,7 @@ import { ANT_STATE } from '../sim/ants.js';
 import { SPECIES_LIST } from '../sim/creatures.js';
 import { Particles } from './particles.js';
 
+
 export class Renderer {
   /**
    * @param {import('../sim/world.js').World} world
@@ -135,6 +136,14 @@ export class Renderer {
     this.selectSprite.anchor.set(0.5);
     this.selectSprite.visible = false;
     this.markerRoot.addChild(this.selectSprite);
+
+    // Bauwerke: ueber dem Terrain, unter den Einheiten.
+    this.structG = new PIXI.Graphics();
+    this.markerRoot.addChild(this.structG);
+    /** Sprite-Pool der Bauwerke (wie bei Ameisen: keine Allokation im Frame). */
+    this.structPool = [];
+    /** Reichweitenkreise der Geschuetze einblenden (Schalter). */
+    this.showRanges = false;
 
     // Hervorhebung der Legende: unter den Einheiten, ueber dem Terrain.
     this.highlightG = new PIXI.Graphics();
@@ -375,6 +384,7 @@ export class Renderer {
     this._drawBrood(level);
     this._drawAnts(level, alpha);
     this._drawCreatures(level, alpha);
+    this._drawStructures(level);
     this._drawHighlight(level);
     this.particles.update(level.id, this._dtFrames || 1);
     this._updateNightVeil(level);
@@ -621,6 +631,71 @@ export class Renderer {
       }
     }
     g.fill({ color: 0xffe08a, alpha: 0.42 });
+  }
+
+  /**
+   * Bauwerke zeichnen. Es sind wenige (hoechstens vierzig je Volk), deshalb
+   * ein einziges Graphics-Objekt, das sich nur dann neu fuellt, wenn sich
+   * wirklich etwas geaendert hat.
+   */
+  _drawStructures(level) {
+    const list = this.world.structures ? this.world.structures.list : null;
+    const pool = this.structPool;
+    const g = this.structG;
+    let used = 0;
+    g.clear();
+
+    if (list && list.length) {
+      const cs = WORLD.CELL_SIZE;
+      for (const st of list) {
+        if (st.levelId !== level.id) continue;
+        const colony = this.world.colonies.get(st.colonyId);
+        const col = colony ? colony.color : 0xffffff;
+
+        let sp = pool[used];
+        if (!sp) {
+          sp = new PIXI.Sprite();
+          sp.anchor.set(0.5, 0.72);        // steht auf der Zelle, nicht darin
+          this.markerRoot.addChild(sp);
+          pool.push(sp);
+        }
+        const entry = this.sprites.get('struct_' + st.key + '_' + st.tier);
+        sp.texture = entry ? entry.textures[0] : PIXI.Texture.EMPTY;
+        sp.tint = 0xffffff;              // eigene Materialfarben, kein Einfaerben
+        sp.scale.set(RENDER.STRUCT_CELLS * cs / this.sprites.cell);
+        sp.position.set((st.x + 0.5) * cs, (st.y + 0.5) * cs);
+        sp.visible = true;
+        used++;
+
+        /**
+         * Koloniefahne. Sie ist der einzige farbige Teil eines Bauwerks und
+         * beantwortet die einzige Frage, die man aus der Ferne hat: wem
+         * gehoert das?
+         */
+        const fx0 = (st.x + 0.5) * cs + cs * 0.55;
+        const fy0 = (st.y + 0.5) * cs - cs * 1.5;
+        g.rect(fx0 - 0.5, fy0, 1, cs * 1.1).fill({ color: 0x2a2320, alpha: 0.9 });
+        g.rect(fx0, fy0, cs * 0.8, cs * 0.5).fill({ color: col, alpha: 0.95 });
+
+        // Reichweite und Schaden als duenne Linien darueber
+        if (st.stats.range && this.showRanges) {
+          g.circle((st.x + 0.5) * cs, (st.y + 0.5) * cs, st.stats.range * cs)
+            .stroke({ width: 1 / this.camera.zoom, color: col, alpha: 0.28 });
+        }
+        if (st.hp < st.hpMax) {
+          const bw = cs * 2.0;
+          const x0 = (st.x + 0.5) * cs - bw / 2, y0 = (st.y - 0.5) * cs;
+          g.rect(x0, y0, bw, cs * 0.3).fill({ color: 0x000000, alpha: 0.55 });
+          g.rect(x0, y0, bw * (st.hp / st.hpMax), cs * 0.3)
+            .fill({ color: 0xd9604a, alpha: 0.95 });
+        }
+      }
+    }
+    for (let i = used; i < pool.length; i++) {
+      if (!pool[i].visible) break;
+      pool[i].visible = false;
+    }
+    this.stats.structures = used;
   }
 
   setSelection(antIndex, alpha = 1) {

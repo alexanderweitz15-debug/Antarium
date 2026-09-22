@@ -21,6 +21,17 @@ import { SPECIES_LIST } from '../sim/creatures.js';
 import { STAGE_NAMES } from '../sim/brood.js';
 import { NUTRIENT_NAMES } from '../config.js';
 import { cellSwatch } from './swatch.js';
+import { MATERIALS } from '../config.js';
+import { STRUCT_LIST } from '../sim/structures.js';
+import { STANCE_LABEL, STANCE_COLOR } from '../sim/diplomacy.js';
+
+/** Was die vier Haltungen praktisch bedeuten. */
+const STANCE_DESC = [
+  'Greift an, ohne zu rechnen – auch kleine Voelker.',
+  'Ausgangslage. Raubzuege, wenn es sich lohnt.',
+  'Keine Angriffe mehr.',
+  'Verbuendete greifen einander nie an.',
+];
 
 export class Legend {
   /**
@@ -32,6 +43,8 @@ export class Legend {
     this.el = el;
     this.sprites = sprites;
     this.game = game || null;
+    /** Wird in refresh() gesetzt; die neuen Abschnitte brauchen die Welt. */
+    this.world = game ? game.world : null;
     this.visibleOnly = visibleOnlyEl;
     this.signature = '';
     if (this.visibleOnly) this.visibleOnly.addEventListener('change', () => { this.signature = ''; });
@@ -42,6 +55,7 @@ export class Legend {
    * @param {{x0:number,y0:number,x1:number,y1:number}} visibleRect Zellbereich
    */
   refresh(world, visibleRect) {
+    this.world = world;
     const level = world.levels.active;
     const onlyVisible = this.visibleOnly && this.visibleOnly.checked;
     const present = onlyVisible ? censusCells(level, visibleRect) : null;
@@ -52,6 +66,10 @@ export class Legend {
       world.colonies.colonies.map((c) => c.id + c.name + c.total).join(','),
       [...castes].sort().join(','),
       [...world.creatureCensus].join(','),
+      // Phase 11: neue Abschnitte muessen auftauchen, sobald es sie gibt
+      world.structures.list.map((b) => b.key).sort().join(','),
+      world.colonies.colonies.map((c) => (c.knownMaterials
+        ? [...c.knownMaterials].sort().join('') : '')).join(','),
     ].join('|');
     if (sig === this.signature) return;
     this.signature = sig;
@@ -145,6 +163,49 @@ export class Legend {
       evo: c.evolutionary,
     }));
     if (casteItems.length) frag.appendChild(this._category('Kasten', casteItems));
+
+    /**
+     * Baustoffe und Bauwerke (Phase 11). Beides erscheint erst, wenn die
+     * Kolonie es kennt – die Legende soll zeigen, was im Spiel vorkommt,
+     * nicht was theoretisch moeglich waere.
+     */
+    const known = new Set();
+    for (const c of this.world.colonies.colonies) {
+      if (!c.alive || !c.knownMaterials) continue;
+      for (const k of c.knownMaterials) known.add(k);
+    }
+    if (known.size > 2) {
+      frag.appendChild(this._category('Baustoffe',
+        MATERIALS.filter((m) => known.has(m.key)).map((m) => ({
+          color: '#' + m.color.toString(16).padStart(6, '0'),
+          name: m.name, desc: m.desc,
+        }))));
+    }
+    const builtKinds = new Set(this.world.structures.list.map((b) => b.key));
+    if (builtKinds.size) {
+      frag.appendChild(this._category('Bauwerke',
+        STRUCT_LIST.filter((d) => builtKinds.has(d.key)).map((d) => ({
+          img: this.sprites.dataURL('struct_' + d.key + '_1', 0),
+          name: d.name, desc: d.desc,
+        }))));
+    }
+
+    // Haltungen zwischen den Voelkern
+    const living = this.world.colonies.colonies.filter((c) => c.alive);
+    if (living.length > 1) {
+      const seen = new Set();
+      for (let a = 0; a < living.length; a++) {
+        for (let b = a + 1; b < living.length; b++) {
+          seen.add(this.world.diplomacy.stance(living[a].id, living[b].id));
+        }
+      }
+      frag.appendChild(this._category('Beziehungen',
+        [...seen].sort().map((st) => ({
+          color: STANCE_COLOR[st],
+          name: STANCE_LABEL[st],
+          desc: STANCE_DESC[st],
+        }))));
+    }
 
     this.el.textContent = '';
     this.el.appendChild(frag);

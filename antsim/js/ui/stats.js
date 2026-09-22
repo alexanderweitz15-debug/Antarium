@@ -11,6 +11,8 @@ import { NUTRIENT_NAMES, SIM } from '../config.js';
 import { CASTE_DEFS } from '../sim/castes.js';
 import { SPECIES_LIST } from '../sim/creatures.js';
 import { geneSummary } from '../sim/genome.js';
+import { STANCE_LABEL, STANCE_COLOR } from '../sim/diplomacy.js';
+import { traitNames } from '../sim/traits.js';
 
 export class StatsPanel {
   constructor(el, world, game, sprites) {
@@ -63,6 +65,46 @@ export class StatsPanel {
         + esc(def.name) + (def.evolutionary ? ' *' : '') + '</span> ');
     }
     parts.push('</div>');
+
+    /**
+     * Beziehungen als Matrix. Wer mit wem im Krieg liegt, ist sonst nur
+     * verstreut in der Kolonieliste zu sehen; hier steht es in einem Bild.
+     */
+    const living = w.colonies.colonies.filter((c) => c.alive);
+    if (living.length > 1) {
+      parts.push('<h3>Beziehungen</h3><table class="rel-table"><tr><td></td>');
+      for (const c of living) {
+        parts.push('<th title="' + esc(c.name) + '"><span class="swatch" style="background:'
+          + c.colorCss + '"></span></th>');
+      }
+      parts.push('</tr>');
+      for (const a of living) {
+        parts.push('<tr><th title="' + esc(a.name) + '"><span class="swatch" style="background:'
+          + a.colorCss + '"></span></th>');
+        for (const b of living) {
+          if (a.id === b.id) { parts.push('<td class="rel-self"></td>'); continue; }
+          const v = w.diplomacy.get(a.id, b.id);
+          const st = w.diplomacy.stance(a.id, b.id);
+          parts.push('<td style="color:' + STANCE_COLOR[st] + '" title="'
+            + esc(a.name + ' / ' + b.name + ': ' + STANCE_LABEL[st] + ' (' + v.toFixed(2) + ')')
+            + '">' + STANCE_LABEL[st][0] + '</td>');
+        }
+        parts.push('</tr>');
+      }
+      parts.push('</table>');
+    }
+
+    // --- Bauwerke und Forschung je Volk
+    if (living.some((c) => c.researched && c.researched.size)) {
+      parts.push('<h3>Forschung und Bauwerke</h3><table class="stat-table">');
+      for (const c of living) {
+        if (!c.researched) continue;
+        const builds = w.structures.ofColony(c.id);
+        parts.push(row(c.name, c.researched.size + '/8 Stufen, '
+          + builds.length + ' Bauwerke, Charakter: ' + esc(traitNames(c.queenTraits))));
+      }
+      parts.push('</table>');
+    }
 
     // --- Stammbaum ----------------------------------------------------------
     parts.push('<h3>Stammbaum</h3>');

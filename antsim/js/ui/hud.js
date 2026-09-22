@@ -109,4 +109,32 @@ const HELP_HTML = `
 <tr><td><kbd>F3</kbd></td><td>Performance-Overlay</td></tr>
 <tr><td><kbd>F4</kbd></td><td>Debug-Menue</td></tr>
 <tr><td><kbd>H</kbd></td><td>diese Hilfe</td></tr>
+</table>
+<h3>Voelker aufeinander hetzen</h3>
+<table>
+<tr><td><b>Kriegsduft</b> auf die <b>Koenigin</b></td><td>ihr Volk erklaert einem Nachbarn den
+Krieg und schickt immer groessere Wellen. Auf Arbeiterinnen gesprueht macht er sie nur gereizt.</td></tr>
+<tr><td><b>Friedensduft</b></td><td>beendet alle Feindschaften des getroffenen Volkes.
+Bei einer blutruenstigen Koenigin wirkungslos.</td></tr>
+<tr><td><b>Buendnisduft</b></td><td>verbuendet zwei Voelker. Verbuendete greifen einander nie an.</td></tr>
+<tr><td>Die Koenigin sitzt</td><td>in ihrer Kammer tief im Nest – dorthin wechseln und
+in die Kammer zielen.</td></tr>
+</table>
+<h3>Charakter und Eigenschaften</h3>
+<table>
+<tr><td>Jede <b>Koenigin</b></td><td>hat einen Charakter (bis zu drei Zuege), der ihr ganzes
+Volk praegt: Eierrate, Soldatenanteil, Bautrieb, Kriegsneigung.</td></tr>
+<tr><td>Jede <b>Ameise</b></td><td>wird mit bis zu zwei Eigenschaften geboren. Anklicken zeigt
+sie im Inspektor.</td></tr>
+<tr><td>Forschungsmenue</td><td>Charakter ansehen, einzeln umschalten oder neu wuerfeln.</td></tr>
+</table>
+<h3>Bauen und Forschen</h3>
+<table>
+<tr><td>Die Kolonie forscht</td><td>von selbst, waehrend sie arbeitet. Es gibt keinen Knopf.</td></tr>
+<tr><td>Baustoffe</td><td>Kiesel, Harz, Lehm (am Wasser und tief unter der Erde),
+Kalk (aus Stein), Chitin (von erlegten Tieren).</td></tr>
+<tr><td>Bauwerke</td><td>Saeurespeier, Harzschleuder, Wachposten, Speicherbau, Brutstube,
+Werkstatt – je drei Stufen.</td></tr>
+<tr><td>Im Sandkasten</td><td>Bauwerke direkt setzen (Gruppe "Bauwerke") oder den
+Forschungsbaum anklicken.</td></tr>
 </table>`;

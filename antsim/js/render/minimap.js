@@ -144,6 +144,27 @@ export class Minimap {
       }
     }
 
+    /**
+     * Bauwerke (Phase 11). Kleine Rauten in Koloniefarbe – auf der
+     * Uebersicht zaehlt nur, WO etwas steht, nicht was.
+     */
+    for (const st of this.world.structures.list) {
+      if (st.levelId !== level.id) continue;
+      const colony = this.world.colonies.get(st.colonyId);
+      const px = this.offX + st.x * scale;
+      const py = this.offY + st.y * scale;
+      const r = Math.max(1.5, scale * 1.6);
+      ctx.fillStyle = colony ? colony.colorCss : '#aaa';
+      ctx.beginPath();
+      ctx.moveTo(px, py - r); ctx.lineTo(px + r, py);
+      ctx.lineTo(px, py + r); ctx.lineTo(px - r, py);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,.65)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
     // --- Nesteingaenge mit Bedrohungsstufe ---------------------------------
     for (const p of this.world.portals.portals) {
       const pos = p.on(level.id);
@@ -159,6 +180,14 @@ export class Minimap {
       if (colony && colony.threat > 0) {
         ctx.fillStyle = ['', '#e8c246', '#e08a33', '#ff4d3d'][colony.threat];
         ctx.fillRect(px - 4, py - 6, 2, 2);
+      }
+      // Im Krieg: roter Ring um den Eingang
+      if (colony && colony.alive && this.world.diplomacy.zeal[colony.id] > 0) {
+        ctx.strokeStyle = '#ff4d3d';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(px + 0.5, py + 0.5, 5.5, 0, Math.PI * 2);
+        ctx.stroke();
       }
     }
 
