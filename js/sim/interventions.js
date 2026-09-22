@@ -12,7 +12,7 @@
  * die Nester hinein.
  */
 
-import { GODMODE, SIM, DIGSCENT } from '../config.js';
+import { GODMODE, SIM, DIGSCENT, COMBAT } from '../config.js';
 import { LEVEL_KIND } from './levels.js';
 import { SURFACE_CELL } from './surface.js';
 import { NEST_CELL, CHAMBER } from './nest.js';
@@ -592,6 +592,26 @@ export const INTERVENTIONS = [
       }
       log(world, CAT.BAU, n + ' Zellen verstaerkt', level.id, x, y);
       return n;
+    },
+  },
+  {
+    key: 'rally', name: 'Sammelpunkt', cost: 4, where: 'both', icon: 'glyph:\u2691',
+    desc: 'Setzt die Fahne des Volkes. Soldatinnen und freie Arbeiterinnen gehen hin'
+      + ' und halten die Stelle - sie kaempfen weiter selbst, man schickt einen Trupp,'
+      + ' keine Marionetten. Auf die eigene Fahne geklickt hebt sie auf.',
+    apply(world, level, x, y, o) {
+      const colony = world.colonies.get(o.colonyId);
+      if (!colony || !colony.alive) return 0;
+      const alt = colony.rally;
+      // Dieselbe Stelle noch einmal: aufheben. Ein Schalter, kein Paar.
+      if (alt && alt.levelId === level.id
+          && Math.abs(alt.x - x) <= 2 && Math.abs(alt.y - y) <= 2) {
+        world.setRally(colony, null);
+        return 1;
+      }
+      if (!level.inBounds(x, y) || level.isSolid(x, y)) return 0;
+      world.setRally(colony, { levelId: level.id, x, y, share: COMBAT.RALLY_SHARE });
+      return 1;
     },
   },
   {

@@ -187,6 +187,17 @@ export class World {
     this.ctx.phero = this.phero;
 
     this.foundColony(null, COLONY.START_ANTS);
+    /**
+     * GEGNER. Ohne sie ist die Karte leer: neue Voelker entstanden bisher
+     * nur aus einem Hochzeitsflug, und der ist selten genug, dass man eine
+     * Dreiviertelstunde spielen konnte, ohne je einem anderen Volk zu
+     * begegnen.
+     */
+    for (let i = 0; i < COLONY.START_RIVALS; i++) {
+      const spot = this._rivalSite(surface);
+      if (!spot) break;
+      this.foundColony(spot, COLONY.RIVAL_ANTS);
+    }
     this.spawnStartCreatures();
 
     bus.logEvent(CAT.SYS, 'Welt "' + this.preset.name + '" erzeugt (Seed "' + this.seed + '")',
@@ -343,6 +354,133 @@ export class World {
       return { x, y };
     }
     return null;
+  }
+
+  /**
+   * Platz fuer ein Rivalenvolk: weit genug von allen vorhandenen
+   * Nesteingaengen. Zu nah beieinander frisst das staerkere das
+   * schwaechere in den ersten Minuten auf, bevor der Spieler ueberhaupt
+   * eingreifen kann.
+   */
+  _rivalSite(surface, minDist = COLONY.RIVAL_MIN_DIST) {
+    const rng = this.rngGen;
+    const taken = this.portals.portals
+      .filter((p) => p.aLevelId === surface.id)
+      .map((p) => ({ x: p.ax, y: p.ay }));
+    // Der Abstand wird schrittweise gelockert, damit auf engen Karten
+    // ueberhaupt ein Platz gefunden wird statt gar keiner.
+    for (let lockerung = 0; lockerung < 4; lockerung++) {
+      const d = minDist * (1 - lockerung * 0.22);
+      for (let i = 0; i < 200; i++) {
+        const x = rng.intRange(8, surface.w - 9);
+        const y = rng.intRange(8, surface.h - 9);
+        if (surface.isSolid(x, y)) continue;
+        let ok = true;
+        for (const t of taken) {
+          const dx = t.x - x, dy = t.y - y;
+          if (dx * dx + dy * dy < d * d) { ok = false; break; }
+        }
+        if (ok) return { x, y };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * ZUWANDERUNG: eine fremde Koenigin landet und gruendet.
+   *
+   * Das haelt die Welt in Bewegung, auch wenn der Spieler nichts tut und
+   * kein Hochzeitsflug stattfindet. Sie faengt klein an - ein zugewandertes
+   * Volk soll eine Gelegenheit sein, keine Strafe.
+   *
+   * @returns {object|null} das neue Volk
+   */
+  immigrate() {
+    const lebend = this.colonies.colonies.filter((c) => c.alive).length;
+    if (lebend >= COLONY.IMMIGRATION_MAX_ALIVE) return null;
+    if (this.colonies.colonies.length >= LIMITS.MAX_COLONIES) return null;
+    if (this.levels.nestCount >= LIMITS.MAX_NEST_LEVELS) return null;
+    const spot = this._rivalSite(this.levels.surface, COLONY.RIVAL_MIN_DIST * 0.7);
+    if (!spot) return null;
+    const c = this.foundColony(spot, COLONY.IMMIGRANT_ANTS);
+    if (c) {
+      bus.logEvent(CAT.SYS, 'Eine fremde Koenigin landet: ' + c.name + ' gruendet ein Nest', {
+        tick: this.tick, levelId: this.levels.surface.id, x: spot.x, y: spot.y, colonyId: c.id,
+      });
+    }
+    return c;
+  }
+
+  /**
+   * Trupp am Sammelpunkt auffuellen.
+   *
+   * WARUM IMMER WIEDER UND NICHT EINMALIG: eine Ameise am Sammelpunkt
+   * greift an, wenn ein Feind kommt, und faellt danach in ihren normalen
+   * Alltag zurueck. Wuerde der Trupp nur einmal aufgestellt, waere er nach
+   * dem ersten Scharmuetzel aufgeloest. Stattdessen wird er in Abstaenden
+   * nachbesetzt - das ist auch das, was ein Volk wirklich tut.
+   *
+   * Zuerst Soldatinnen, dann Arbeiterinnen. Brutpflegerinnen und
+   * Traegerinnen bleiben unangetastet: ein Trupp darf das Volk nicht
+   * aushungern.
+   */
+  fillRally(colony) {
+    const r = colony.rally;
+    if (!r) return 0;
+    const want = Math.min(COMBAT.RALLY_MAX,
+      Math.round(colony.total * (r.share || COMBAT.RALLY_SHARE)));
+    const ants = this.ants;
+    let da = 0;
+    for (let i = 0; i < ants.high; i++) {
+      if (ants.alive[i] && ants.colony[i] === colony.id && ants.state[i] === ANT_STATE.RALLY) da++;
+    }
+    if (da >= want) return 0;
+
+    let neu = 0;
+    // Zwei Durchgaenge: erst Soldatinnen, dann der Rest.
+    for (let runde = 0; runde < 2 && da + neu < want; runde++) {
+      for (let i = 0; i < ants.high && da + neu < want; i++) {
+        if (!ants.alive[i] || ants.colony[i] !== colony.id) continue;
+        const st = ants.state[i];
+        if (st !== ANT_STATE.EXPLORE && st !== ANT_STATE.IDLE
+            && st !== ANT_STATE.PATROL && st !== ANT_STATE.GUARD) continue;
+        if (ants.carryType[i] !== CARRY.NONE) continue;   // erst abliefern
+        const soldat = ants.caste[i] === CASTE.SOLDIER;
+        if (runde === 0 && !soldat) continue;
+        if (ants.caste[i] === CASTE.QUEEN) continue;
+        ants.state[i] = ANT_STATE.RALLY;
+        ants.timer[i] = COMBAT.RALLY_TIMEOUT;
+        neu++;
+      }
+    }
+    return neu;
+  }
+
+  /**
+   * Sammelpunkt setzen oder aufheben.
+   * @param {object} colony
+   * @param {{levelId:number,x:number,y:number,share?:number}|null} punkt
+   */
+  setRally(colony, punkt) {
+    colony.rally = punkt;
+    if (!punkt) {
+      // Aufheben: wer sich gerade sammelt, geht zurueck an die Arbeit.
+      const ants = this.ants;
+      for (let i = 0; i < ants.high; i++) {
+        if (ants.alive[i] && ants.colony[i] === colony.id
+            && ants.state[i] === ANT_STATE.RALLY) {
+          ants.state[i] = ANT_STATE.EXPLORE;
+          ants.timer[i] = 60;
+        }
+      }
+      bus.logEvent(CAT.KAMPF, colony.name + ': Sammelpunkt aufgehoben',
+        { tick: this.tick, colonyId: colony.id });
+      return;
+    }
+    bus.logEvent(CAT.KAMPF, colony.name + ': Trupp sammelt sich', {
+      tick: this.tick, levelId: punkt.levelId, x: punkt.x, y: punkt.y, colonyId: colony.id,
+    });
+    this.fillRally(colony);
   }
 
   /** Startbesatz an Kreaturen auf der Oberflaeche verteilen. */
@@ -987,6 +1125,10 @@ export class World {
       if ((this.tick + colony.id * 7) % BUILD.WANT_INTERVAL === 0) {
         this.structures.updateWants(colony);
       }
+      // Trupp am Sammelpunkt auffuellen
+      if (colony.rally && (this.tick + colony.id * 9) % COMBAT.RALLY_INTERVAL === 0) {
+        this.fillRally(colony);
+      }
       // Bedrohungslage und Reaktion darauf
       if ((this.tick + colony.id * 5) % COMBAT.THREAT_INTERVAL === 0) {
         this.combat.updateThreat(colony, this.ctx);
@@ -1010,6 +1152,11 @@ export class World {
     }
     this.structures.update(this.ctx);
     this.digScent.decay(this.tick);
+    if (this.tick > 0 && this.tick % COLONY.IMMIGRATION_INTERVAL === 0
+        && this.rngSim.chance(COLONY.IMMIGRATION_CHANCE)) {
+      const neu = this.immigrate();
+      if (neu) this.newLevelHint = true;
+    }
     const t4 = now();
 
     // --- Distanzfelder ------------------------------------------------------

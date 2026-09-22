@@ -155,6 +155,40 @@ export function eggInterval(colony) {
  */
 export function chooseCaste(colony, rng) {
   const g = colony.genome;
+  /**
+   * BEFEHL DES SPIELERS GEHT VOR.
+   *
+   * colony.casteOrder ist ein Wunschanteil je Kaste (0..1, Summe frei).
+   * Gelegt wird die Kaste, die ihrem Wunsch am weitesten HINTERHERHINKT –
+   * das regelt sich von selbst ein, ohne dass irgendwo mitgezaehlt werden
+   * muss, wie viele Eier schon welcher Sorte gelegt wurden.
+   *
+   * Was der Spieler nicht aufheben kann: Soldatinnen ohne Protein. Eine
+   * Koenigin kann keinen Panzer aus Zucker bauen, und ein Regler, der das
+   * behauptet, waere eine Luege statt einer Steuerung.
+   */
+  const order = colony.casteOrder;
+  if (order) {
+    const rich = colony.balanceArr
+      && colony.balanceArr[NUTRIENT.PROTEIN] >= BROOD_CFG.RICH_PROTEIN
+      && colony.storeArr[NUTRIENT.PROTEIN] > 25;
+    let summe = 0;
+    for (const k of Object.keys(order)) summe += order[k] || 0;
+    if (summe > 0) {
+      let bestId = -1, bestLuecke = -1;
+      for (const key of Object.keys(order)) {
+        const anteil = (order[key] || 0) / summe;
+        if (anteil <= 0) continue;
+        const def = CASTE_BY_KEY.get(key);
+        if (!def) continue;
+        if (def.id !== CASTE.WORKER && !rich) continue;   // ohne Protein nur Arbeiterinnen
+        const ist = (colony.population[def.id] || 0) / Math.max(1, colony.total);
+        const luecke = anteil - ist;
+        if (luecke > bestLuecke) { bestLuecke = luecke; bestId = def.id; }
+      }
+      if (bestId >= 0) return bestId;
+    }
+  }
   const rich = colony.balanceArr && colony.balanceArr[NUTRIENT.PROTEIN] >= BROOD_CFG.RICH_PROTEIN
     && colony.storeArr[NUTRIENT.PROTEIN] > 25;
 

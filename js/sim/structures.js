@@ -344,6 +344,39 @@ export class Structures {
     return false;
   }
 
+  /**
+   * BAUAUFTRAG DES SPIELERS. Gleiche Warteschlange wie die Selbstplanung,
+   * nur mit gewaehltem Ort - das Bauwerk entsteht nicht aus dem Nichts,
+   * sondern muss gebaut und bezahlt werden wie jedes andere.
+   *
+   * @returns {{ok:boolean, grund?:string}}
+   */
+  order(colony, level, x, y, key) {
+    // STRUCTURES ist eine LISTE, kein Nachschlagewerk – der erste Versuch
+    // griff mit dem Schluessel hinein und bekam immer undefined.
+    const def = STRUCTURES.find((d) => d.key === key);
+    if (!def) return { ok: false, grund: 'Unbekanntes Bauwerk' };
+    const tier = this.tierOf(colony, key);
+    if (tier <= 0) return { ok: false, grund: def.name + ' ist noch nicht erforscht' };
+    if ((colony.structureCount || 0) >= BUILD.MAX_PER_COLONY) {
+      return { ok: false, grund: 'Hoechstzahl an Bauwerken erreicht' };
+    }
+    if (colony.pendingBuild && colony.pendingBuild.length >= BUILD.MAX_ORDERS) {
+      return { ok: false, grund: 'Es wird schon gebaut' };
+    }
+    if (!level.inBounds(x, y) || level.isSolid(x, y)) {
+      return { ok: false, grund: 'Kein Platz an dieser Stelle' };
+    }
+    if (this._tooClose(level.id, x, y, key)) {
+      return { ok: false, grund: 'Zu nah an einem gleichen Bauwerk' };
+    }
+    this._order(colony, level, { x, y }, def, tier);
+    bus.logEvent(CAT.BAU, colony.name + ': ' + def.name + ' in Auftrag gegeben', {
+      tick: this.world.tick, levelId: level.id, x, y, colonyId: colony.id,
+    });
+    return { ok: true };
+  }
+
   /** Bauauftrag einstellen; gebaut wird von den Ameisen wie alles andere. */
   _order(colony, level, spot, def, tier) {
     const t = def.tiers[tier - 1];

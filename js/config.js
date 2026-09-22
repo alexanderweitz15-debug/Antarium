@@ -6,8 +6,8 @@
  * Gruppen sind thematisch sortiert und kommentiert.
  */
 
-export const VERSION = '1.1.0';
-export const PHASE = 11;
+export const VERSION = '1.2.0';
+export const PHASE = 14;
 
 /** Fest gepinnte PixiJS-Version (CDN). Siehe index.html importmap. */
 export const PIXI_VERSION = '8.21.0';
@@ -159,6 +159,17 @@ export const TRANSITION = {
 // RENDERING
 // ---------------------------------------------------------------------------
 export const RENDER = {
+  /**
+   * Unterhalb dieses Zooms werden Ameisen als gerichteter Strich statt als
+   * vollstaendiges Insekt gezeichnet (siehe drawAntFar).
+   *
+   * Bei Zoom 3 ist eine Zelle zwoelf Bildpunkte breit, der Ameisenkoerper
+   * also rund acht - mit sechs Beinen daran wird eine Strasse aus
+   * zweihundertachtzig Tieren zu einem roten Gekritzel, in dem man weder
+   * Einzeltiere noch die Laufrichtung erkennt. Ab Zoom 5 lohnt das Detail.
+   */
+  ANT_DETAIL_ZOOM: 5,
+
   /** Kantenlaenge eines prozeduralen Ameisen-Sprites in Pixeln. */
   SPRITE_PX: 20,
   /** Anzahl Laufbilder pro Kaste. */
@@ -189,8 +200,41 @@ export const RENDER = {
 export const COLONY = {
   NAMES: ['Rot', 'Blau', 'Gruen', 'Gelb', 'Violett', 'Tuerkis', 'Orange', 'Sand'],
   COLORS: [0xd9483b, 0x3f7fd9, 0x4caf50, 0xe0c341, 0x9b59d0, 0x33c2c2, 0xe08a33, 0xd8cdb4],
-  /** Startpopulation einer Kolonie in Phase 1 (nur zur Demonstration). */
+  /** Startpopulation des ersten Volkes. */
   START_ANTS: 260,
+
+  // --- Gegner (Phase 14) --------------------------------------------------
+  /**
+   * RIVALEN BEIM START.
+   *
+   * Die Welt begann mit genau EINEM Volk. Neue Voelker entstanden nur aus
+   * einem Hochzeitsflug, und der ist selten - man konnte eine Dreiviertel-
+   * stunde spielen, ohne je einem anderen Volk zu begegnen. Ein Feldzug
+   * ohne Gegner ist kein Feldzug.
+   */
+  START_RIVALS: 3,
+  /** Startvolk eines Rivalen. Kleiner als das eigene: man soll wachsen duerfen. */
+  RIVAL_ANTS: 120,
+  /**
+   * Mindestabstand zwischen zwei Nesteingaengen beim Start, in Zellen.
+   * Zu nah beieinander frisst das staerkere das schwaechere in den ersten
+   * Minuten auf, bevor der Spieler ueberhaupt eingreifen kann.
+   */
+  RIVAL_MIN_DIST: 90,
+
+  /**
+   * ZUWANDERUNG. Alle paar Minuten landet eine fremde Koenigin auf der
+   * Karte und gruendet - so wie es Jungkoeniginnen nach dem Hochzeitsflug
+   * wirklich tun, nur dass sie hier von ausserhalb kommt. Damit bleibt die
+   * Welt auch nach Stunden in Bewegung, ohne dass der Spieler etwas tut.
+   */
+  IMMIGRATION_INTERVAL: 5400,
+  /** Wahrscheinlichkeit je Durchlauf. */
+  IMMIGRATION_CHANCE: 0.55,
+  /** Zuwanderung hoert auf, sobald so viele Voelker leben. */
+  IMMIGRATION_MAX_ALIVE: 6,
+  /** Startvolk einer zugewanderten Koenigin - sie faengt klein an. */
+  IMMIGRANT_ANTS: 40,
 };
 
 // ---------------------------------------------------------------------------
@@ -431,7 +475,8 @@ export const MODES = {
      * sie setzen Soldatinnen aus dem Nichts, schenken Nahrung und bauen
      * umsonst. Wer wirtschaften soll, darf sie nicht haben.
      */
-    tools: ['digscent', 'clearscent', 'scent', 'warscent', 'peacescent', 'allyscent'],
+    tools: ['digscent', 'clearscent', 'scent', 'rally',
+      'warscent', 'peacescent', 'allyscent'],
     deny: [],
     own: true,
     godbar: false,
@@ -1046,6 +1091,20 @@ export const COMBAT = {
    * zeigt die Oberflaeche das Paar als aktive Front an.
    */
   PAIR_RECENT: 180,
+  /**
+   * Umkreis um den Sammelpunkt, in dem eine Ameise als "angekommen" gilt
+   * und stehen bleibt (Zellen). Zu klein, und der Trupp draengt sich auf
+   * einem Punkt; zu gross, und er steht als Wolke ueber dem halben Feld.
+   */
+  RALLY_HOLD: 5,
+  /** Ticks zwischen zwei Nachbesetzungen des Trupps. */
+  RALLY_INTERVAL: 90,
+  /** Anteil des Volkes, der sich am Sammelpunkt einfindet. */
+  RALLY_SHARE: 0.25,
+  /** Harte Obergrenze - ein Trupp darf das Volk nicht leerraeumen. */
+  RALLY_MAX: 120,
+  /** Ticks, die eine Ameise hoechstens am Sammelpunkt bleibt. */
+  RALLY_TIMEOUT: 5400,
   /**
    * Nur jeder n-te Treffer wirft Funken. Bei fuenfhundert Kaempfenden
    * waere ein Teilchen je Treffer und Tick nur noch ein roter Nebel –
@@ -1705,6 +1764,15 @@ export const RESEARCH_TREE = [
 ];
 
 export const BUILD = {
+  /**
+   * Offene Bauauftraege je Volk. Die Selbstplanung stellt immer nur einen
+   * ein; der Spieler darf ein paar vormerken, aber nicht beliebig viele -
+   * mit den vorhandenen Arbeiterinnen laesst sich ohnehin nur eine
+   * Baustelle sinnvoll bedienen, der Rest waere eine Liste, die nie
+   * abgearbeitet wird.
+   */
+  MAX_ORDERS: 4,
+
   /** Hoechstzahl Bauwerke je Kolonie. */
   MAX_PER_COLONY: 40,
   /**

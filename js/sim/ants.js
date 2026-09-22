@@ -17,7 +17,7 @@
 
 import {
   ANTS, LIMITS, PORTALS, DIG, PHERO, FOOD, NUTRITION, LIFE, NUTRIENT,
-  FORTIFY, STABILITY, DAYNIGHT, GODMODE, TRAIT_CFG, BUILD, DIGSCENT,
+  FORTIFY, STABILITY, DAYNIGHT, GODMODE, TRAIT_CFG, BUILD, DIGSCENT, COMBAT,
 } from '../config.js';
 import { LEVEL_KIND } from './levels.js';
 import { CASTE, casteDef } from './castes.js';
@@ -56,6 +56,7 @@ export const ANT_STATE = {
   LOOT: 19,        // mit Beute auf dem Heimweg
   FETCH: 20,       // unterwegs zu einer Materialfundstelle
   AID: 21,         // unterwegs zu einem bedraengten Verbuendeten
+  RALLY: 22,       // unterwegs zum Sammelpunkt des Volkes (Trupp)
 };
 
 export const ANT_STATE_LABEL = {
@@ -63,7 +64,8 @@ export const ANT_STATE_LABEL = {
   5: 'Graebt', 6: 'Baut', 7: 'Repariert', 8: 'Pflegt Brut', 9: 'Melkt Blattlaeuse',
   10: 'Haelt Wache', 11: 'Patrouilliert', 12: 'Greift an', 13: 'Verteidigt',
   14: 'Flieht', 15: 'Evakuiert Brut', 16: 'Traegt Verwundete', 17: 'Blockiert Eingang',
-  18: 'Raubzug', 19: 'Traegt Beute heim',
+  18: 'Raubzug', 19: 'Traegt Beute heim', 20: 'Holt Baustoff',
+  21: 'Eilt zu Hilfe', 22: 'Sammelt sich',
 };
 
 /** Was eine Ameise tragen kann. */
@@ -155,6 +157,16 @@ export class Ants {
     // --- Identitaet und Ebene --------------------------------------------
     this.alive = new Uint8Array(capacity);
     this.level = new Uint8Array(capacity);
+    /**
+     * Zustand, der nach dem Portaluebertritt fortgesetzt wird.
+     *
+     * _tryEnter setzt TRANSIT und ueberschreibt damit den laufenden
+     * Auftrag. Eine Bauarbeiterin auf dem Weg zu einer Baustelle auf der
+     * anderen Ebene verlor ihn dadurch schon beim BETRETEN des Schachts –
+     * nicht erst beim Ankommen, wo ich ihn zuerst gesucht habe. 0 = nichts
+     * fortzusetzen.
+     */
+    this.resumeState = new Uint8Array(capacity);
     this.colony = new Uint8Array(capacity);
     this.caste = new Uint8Array(capacity);
     this.state = new Uint8Array(capacity);
@@ -279,6 +291,7 @@ export class Ants {
     const def = casteDef(opts.casteId !== undefined ? opts.casteId : CASTE.WORKER);
     this.alive[i] = 1;
     this.level[i] = opts.levelId;
+    this.resumeState[i] = 0;
     this.colony[i] = opts.colonyId;
     this.caste[i] = def.id;
     this.state[i] = opts.state !== undefined ? opts.state : ANT_STATE.EXPLORE;
@@ -706,6 +719,96 @@ export class Ants {
         break;
       }
 
+      /**
+       * BAUEN AN DER OBERFLAECHE.
+       *
+       * Der Bauzustand war nur im Nest behandelt; an der Oberflaeche fiel
+       * er in das default dieser Liste und wurde geloescht. Eine
+       * Bauarbeiterin verlor ihren Auftrag also genau beim Verlassen des
+       * Nestes – gemessen stand eine Harzschleuder zwoelftausend Ticks bei
+       * null von vierhundertfuenfzig, obwohl staendig zwanzig Ameisen im
+       * Bauzustand unterwegs waren.
+       *
+       * Draussen gibt es keine Distanzfelder, dafuer offenes Gelaende: hier
+       * wird geradeaus gesteuert.
+       */
+      case ANT_STATE.BUILD: {
+        const q = colony ? colony.pendingBuild : null;
+        if (!q || !q.length || this.timer[i] === 0) {
+          this.state[i] = ANT_STATE.EXPLORE;
+          this.timer[i] = rng.intRange(30, 150);
+          break;
+        }
+        const job = q[0];
+        if (job.levelId !== level.id) {
+          // Baustelle liegt im Nest: heimlaufen, der Rest ergibt sich dort.
+          this._beginReturn(level, i, ctx);
+          this.state[i] = ANT_STATE.BUILD;
+          break;
+        }
+        const jx = job.x + 0.5, jy = job.y + 0.5;
+        const jdx = jx - this.x[i], jdy = jy - this.y[i];
+        if (jdx * jdx + jdy * jdy <= DIG.REACH * DIG.REACH) {
+          this.dir[i] = Math.atan2(jdy, jdx);
+          this.anim[i] += 0.3;
+          const rate = DIG.RATE_PER_ANT * this.buildMul[i]
+            * (colony.genome ? 0.6 + colony.genome.bautrieb : 1);
+          const r = ctx.structures.contribute(colony, rate);
+          if (r !== 0) {
+            if (r > 0) {
+              colony.builtTotal = (colony.builtTotal || 0) + 1;
+              colony.research += BUILD.POINTS_PER_BUILD * 10;
+            }
+            this.state[i] = ANT_STATE.EXPLORE;
+            this.timer[i] = rng.intRange(30, 120);
+          }
+        } else {
+          this.dir[i] += angleDelta(this.dir[i], Math.atan2(jdy, jdx)) * 0.35
+            + rng.range(-0.08, 0.08);
+        }
+        break;
+      }
+
+      /**
+       * SAMMELPUNKT (Trupp). Der Spieler setzt eine Fahne, die Ameisen des
+       * Volkes gehen hin und halten dort.
+       *
+       * Das ist die halbdirekte Steuerung: man schickt einen TRUPP an einen
+       * Ort, das einzelne Tier entscheidet weiter selbst - es kaempft,
+       * weicht aus und frisst wie immer. Ein Befehl, kein Faden.
+       */
+      case ANT_STATE.RALLY: {
+        const r = colony ? colony.rally : null;
+        if (!r || this.timer[i] === 0) {
+          this.state[i] = ANT_STATE.EXPLORE;
+          this.timer[i] = rng.intRange(30, 150);
+          break;
+        }
+        if (r.levelId !== level.id) {
+          // Falsche Ebene: erst ans Tageslicht. _tryEnter laesst RALLY
+          // durch das eigene Tor, der Rest ergibt sich auf der anderen
+          // Seite von selbst.
+          if (!fields || !this._steerField(level, i, fields.entrance, rng)) {
+            this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+          }
+          break;
+        }
+        const rdx = r.x + 0.5 - this.x[i], rdy = r.y + 0.5 - this.y[i];
+        const rd2 = rdx * rdx + rdy * rdy;
+        if (rd2 > COMBAT.RALLY_HOLD * COMBAT.RALLY_HOLD) {
+          this.dir[i] += angleDelta(this.dir[i], Math.atan2(rdy, rdx)) * 0.35
+            + rng.range(-0.1, 0.1);
+        } else {
+          // Angekommen: im Umkreis bleiben und Alarm legen, damit die
+          // Nachrueckenden den Weg finden.
+          this.dir[i] += rng.range(-0.7, 0.7);
+          if (phero && level.kind === LEVEL_KIND.SURFACE) {
+            phero.deposit(cid, PH.ALARM, cx, cy, PHERO.DEPOSIT.ALARM * 0.3);
+          }
+        }
+        break;
+      }
+
       case ANT_STATE.FETCH: {
         if (this.carryType[i] !== CARRY.NONE || !colony || !colony.materialSpot
             || this.timer[i] === 0) {
@@ -1087,8 +1190,23 @@ export class Ants {
         }
         const job = q[0];
         if (job.levelId !== level.id) {
-          this.state[i] = ANT_STATE.EXPLORE;
-          this.timer[i] = rng.intRange(30, 120);
+          /**
+           * BAUSTELLE AUF EINER ANDEREN EBENE: HINGEHEN, NICHT AUFGEBEN.
+           *
+           * Vorher fiel die Ameise hier sofort in EXPLORE zurueck. Zugeteilt
+           * werden Bauleute aber nur im Nest – ein Auftrag an der
+           * OBERFLAECHE bekam damit nie jemanden: gemessen stand eine
+           * Harzschleuder zwoelftausend Ticks bei null von
+           * vierhundertfuenfzig, mit einer gemeldeten Bauarbeiterin, die in
+           * Wahrheit jeden Tick wieder absprang.
+           *
+           * Jetzt laeuft sie zum Tor. _tryEnter laesst BUILD durch das
+           * eigene Portal, auf der anderen Seite steht sie auf der
+           * richtigen Ebene und faengt an.
+           */
+          if (!fields || !this._steerField(level, i, fields.entrance, rng)) {
+            this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+          }
           break;
         }
         const bx = job.x + 0.5, by = job.y + 0.5;
@@ -1441,7 +1559,8 @@ export class Ants {
      * geoeffnetes Stockwerk (siehe World.expandNest). Fremde Tore bleiben
      * ihnen verschlossen, sonst spazieren sie in Nachbarnester.
      */
-    const digger = st === ANT_STATE.DIG && portal.colonyId === this.colony[i];
+    const digger = (st === ANT_STATE.DIG || st === ANT_STATE.RALLY
+      || st === ANT_STATE.BUILD) && portal.colonyId === this.colony[i];
     const escapingNow = level.colonyId >= 0 && level.colonyId !== this.colony[i];
     if (st !== ANT_STATE.RETURN && st !== ANT_STATE.LOOT
         && !raider && !helper && !digger && !escapingNow) return;
@@ -1480,6 +1599,7 @@ export class Ants {
       if (this.hp[i] <= 0) { this._die(i, level, ctx, 'Tor'); return; }
     }
     ctx.portals.consume(portal, level.id);
+    this.resumeState[i] = (st === ANT_STATE.BUILD || st === ANT_STATE.RALLY) ? st : 0;
     this.state[i] = ANT_STATE.TRANSIT;
     this.transit[i] = PORTALS.TRANSIT_TICKS;
     this.portalRef[i] = ctx.portals.portals.indexOf(portal);
@@ -1499,10 +1619,21 @@ export class Ants {
     this.py[i] = this.y[i];
     // In ein Nest geht es nach unten, an die Oberflaeche in eine Zufallsrichtung.
     this.dir[i] = destLevel && destLevel.kind === LEVEL_KIND.NEST ? Math.PI / 2 : ctx.rng.angle();
+    /**
+     * AUFTRAEGE UEBERLEBEN DEN UEBERTRITT.
+     *
+     * _arrive setzte jede ankommende Ameise auf EXPLORE. Eine Bauarbeiterin,
+     * die zu einer Baustelle auf der anderen Ebene unterwegs war, verlor
+     * damit genau in dem Moment ihren Auftrag, in dem sie ankam – die
+     * Harzschleuder an der Oberflaeche stand zwoelftausend Ticks bei null,
+     * obwohl staendig jemand losging. Dasselbe gilt fuer den Sammelpunkt.
+     */
+    const weiterAuftrag = this.resumeState[i] || -1;
+    this.resumeState[i] = 0;
     const wasRaiding = this.state[i] === ANT_STATE.RAID || this.raidTarget[i] >= 0;
     const arrivesInNest = destLevel && destLevel.kind === LEVEL_KIND.NEST;
     const foreignNest = arrivesInNest && destLevel.colonyId !== this.colony[i];
-    this.state[i] = ANT_STATE.EXPLORE;
+    this.state[i] = weiterAuftrag >= 0 ? weiterAuftrag : ANT_STATE.EXPLORE;
     if (wasRaiding && !arrivesInNest && this.raidTarget[i] >= 0
         && this.carryType[i] === CARRY.NONE) {
       // Aus dem eigenen Nest heraus: weiter zum Ziel des Raubzugs

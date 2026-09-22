@@ -94,13 +94,31 @@ export class Legend {
       mutagen: 'Mutagene',
       kreatur: 'Bauten der Kreaturen',
     };
-    for (const [cat, list] of byCat) {
+    /**
+     * REIHENFOLGE NACH NUTZEN. Bisher kam zuerst, was in der Zelltabelle
+     * zuerst steht – also Gras, Erde, Stein, Sand. Das ist genau das, was
+     * niemand nachschlagen muss, und es stand an der auffaelligsten
+     * Stelle. Terrain kommt jetzt zuletzt und eingeklappt.
+     */
+    // Wer hier lebt, steht ganz oben – das ist die haeufigste Frage.
+    // Nur lebende Voelker: eine Legende erklaert, was man SIEHT.
+    frag.appendChild(this._category('Kolonien',
+      world.colonies.colonies.filter((c) => c.alive).map((c) => ({
+        color: c.colorCss,
+        name: c.name,
+        desc: c.total + ' Ameisen, ' + c.nestLevelIds.length + ' Nest-Ebene(n)',
+      }))));
+
+    const RANG = { nahrung: 0, struktur: 1, kammer: 2, mutagen: 3, kreatur: 4, terrain: 9 };
+    const sortiert = [...byCat.entries()]
+      .sort((a, b) => (RANG[a[0]] ?? 5) - (RANG[b[0]] ?? 5));
+    for (const [cat, list] of sortiert) {
       frag.appendChild(this._category(catTitle[cat] || cat, list.map((d) => ({
         swatch: this._cellSwatch(level, d.id, 0),
         name: d.name,
         desc: d.desc,
         cellId: d.id,
-      }))));
+      })), cat === 'terrain'));
     }
 
     // --- Kammertypen (nur im Nest) ---------------------------------------
@@ -118,14 +136,6 @@ export class Legend {
       }
     }
 
-    // --- Kolonien ---------------------------------------------------------
-    // Nur lebende Voelker: eine Legende erklaert, was man SIEHT.
-    frag.appendChild(this._category('Kolonien',
-      world.colonies.colonies.filter((c) => c.alive).map((c) => ({
-        color: c.colorCss,
-        name: c.name,
-        desc: c.total + ' Ameisen, ' + c.nestLevelIds.length + ' Nest-Ebene(n)',
-      }))));
 
     // --- Brut (nur im Nest) -----------------------------------------------
     if (!isSurface) {
@@ -213,11 +223,22 @@ export class Legend {
     this.el.appendChild(frag);
   }
 
-  _category(title, items) {
+  /**
+   * @param {string} title
+   * @param {object[]} items
+   * @param {boolean} [zu] true = eingeklappt starten
+   *
+   * Gelaende steht eingeklappt. Eine Legende soll erklaeren, was man nicht
+   * versteht – "Gras: normaler Untergrund" stand bisher ganz oben und
+   * nahm den Platz weg, an dem Voelker, Nahrung und Bauwerke gehoeren.
+   */
+  _category(title, items, zu = false) {
     const box = document.createElement('div');
-    box.className = 'legend-cat';
+    box.className = 'legend-cat' + (zu ? ' collapsed' : '');
     const h = document.createElement('h3');
     h.textContent = title;
+    h.title = 'Auf- und zuklappen';
+    h.addEventListener('click', () => box.classList.toggle('collapsed'));
     box.appendChild(h);
     for (const it of items) {
       const row = document.createElement('div');

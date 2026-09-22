@@ -119,6 +119,7 @@ const ANT_COLS = ['alive', 'level', 'colony', 'caste', 'state', 'x', 'y', 'px', 
   'dir', 'speed', 'hp', 'hpMax', 'hunger', 'age', 'carryType', 'carryNutrient',
   'carryAmount', 'carrySource', 'carryRef', 'targetX', 'targetY', 'timer',
   'phenoSize', 'phenoSpeed', 'phenoLife', 'transit', 'portalRef', 'portalCooldown',
+  'resumeState',
   'trip', 'lifespan', 'stuck', 'raidTarget', 'anim', 'hungerTol',
   /**
    * Phase 11: nur die Eigenschaften selbst und das Gift. Alles andere

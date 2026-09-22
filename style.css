@@ -795,3 +795,40 @@ html, body {
 .res-trend.up { color: var(--accent); }
 .res-trend.down { color: var(--warn); }
 .res.low .res-val { color: var(--warn); }
+
+/* Legende: Kategorien lassen sich zuklappen. Gelaende startet zu. */
+.legend-cat > h3 { cursor: pointer; user-select: none; }
+.legend-cat > h3::before { content: '\25be '; color: var(--text-dim); }
+.legend-cat.collapsed > h3::before { content: '\25b8 '; }
+.legend-cat.collapsed > .legend-item { display: none; }
+
+/* ===========================================================================
+ * EINGEKLAPPTE PANELS
+ *
+ * Werkzeugspalte, Kolonien, Legende und Ereignisse nahmen zusammen fast die
+ * halbe Bildflaeche; die Karte war ein Streifen dazwischen. Ein Klick auf
+ * die Ueberschrift laesst nur noch die Titelzeile stehen.
+ * ======================================================================== */
+.panel > h2.foldable { cursor: pointer; user-select: none; }
+.panel > h2.foldable::before { content: '\25be'; color: var(--text-dim); margin-right: 5px; }
+.panel.folded > h2.foldable::before { content: '\25b8'; }
+.panel.folded > .panel-body,
+.panel.folded > canvas { display: none; }
+/*
+ * Die festen Hoehen der einzelnen Panels muessen ausdruecklich aufgehoben
+ * werden, sonst bleibt ein leerer Kasten stehen, wo nur noch die
+ * Titelzeile sein sollte – genau das zeigte der erste Versuch.
+ */
+.panel.folded,
+#panel-colonies.folded,
+#panel-legend.folded,
+#panel-log.folded,
+#panel-tools.folded {
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  flex: 0 0 auto !important;
+}
+/* Das Ereignisfenster haengt am unteren Rand – eingeklappt schrumpft es
+   nach unten weg statt nach oben. */
+#panel-log.folded { top: auto; }

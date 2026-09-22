@@ -141,6 +141,30 @@ export class Cell {
  * Alle Kasten werden auf die gleiche Pixel-Laenge normiert – die tatsaechliche
  * Groesse in der Welt macht der Renderer ueber caste.size.
  */
+/**
+ * FERNANSICHT einer Ameise: ein kurzer, gerichteter Strich.
+ *
+ * Aus der Vogelperspektive ist eine Ameisenstrasse eine LINIE. Zeichnet man
+ * bei Zoom 3 jede der zweihundertachtzig Ameisen als vollstaendiges Insekt
+ * mit sechs Beinen, ergibt das ein rotes Gekritzel, in dem man weder
+ * einzelne Tiere noch die Richtung der Strasse erkennt – der
+ * Bildschirmabzug sah aus wie ein Kabelbaum.
+ *
+ * Deshalb gibt es je Kaste eine zweite, beinlose Fassung. Der Renderer
+ * waehlt sie unterhalb von RENDER.ANT_DETAIL_ZOOM.
+ */
+export function drawAntFar(cell, art) {
+  const cw = cell.w, ch = cell.h;
+  const cy = ch / 2;
+  // Laenge nach Koerpergroesse der Kaste, Breite bewusst schmal.
+  const laenge = cw * (0.40 + (art.ab ? art.ab[0] : 4) * 0.035);
+  const dicke = Math.max(2, ch * 0.16);
+  const x0 = (cw - laenge) / 2;
+  cell.rect(x0, cy - dicke / 2, laenge, dicke, PAL.body);
+  // Ein hellerer Punkt vorn gibt die Blickrichtung, ohne Beine zu brauchen.
+  cell.rect(x0 + laenge - dicke, cy - dicke / 2, dicke, dicke, PAL.light);
+}
+
 export function drawAnt(cell, art, frame, frames) {
   const cw = cell.w, ch = cell.h;
   const ab = art.ab, th = art.th, hd = art.hd;
@@ -455,6 +479,16 @@ export function defaultManifest() {
       scale: 1.0,
       animations: { walk: { from: 0, to: RENDER.WALK_FRAMES - 1, fps: 14, loop: true } },
     };
+    // Fernansicht: ein Bild, keine Animation (siehe drawAntFar).
+    sprites['antfar_' + c.key] = {
+      file: null,
+      frameWidth: RENDER.SPRITE_PX,
+      frameHeight: RENDER.SPRITE_PX,
+      frames: 1,
+      anchor: [0.5, 0.5],
+      scale: 1.0,
+      animations: {},
+    };
   }
   for (const sp of CREATURES.SPECIES) {
     sprites['creature_' + sp.key] = {
@@ -575,6 +609,9 @@ export class SpriteBank {
           drawStructure(cell, sk, Number(tier) - 1);
         } else if (key.startsWith('brood_')) {
           drawBrood(cell, key === 'brood_egg' ? 0 : (key === 'brood_larva' ? 1 : 2));
+        } else if (key.startsWith('antfar_')) {
+          const def = CASTE_DEFS.find((c) => c.key === key.slice(7));
+          drawAntFar(cell, def ? def.art : CASTE_DEFS[1].art);
         } else {
           const casteKey = key.replace(/^ant_/, '');
           const def = CASTE_DEFS.find((c) => c.key === casteKey);

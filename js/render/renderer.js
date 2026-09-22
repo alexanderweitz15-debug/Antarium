@@ -64,6 +64,7 @@ export class Renderer {
     this.showChunkGrid = false;
 
     this._casteTex = [];
+    this._casteFarTex = [];
     this._casteScale = new Float32Array(CASTE_DEFS.length);
     this._speciesTex = [];
     this._speciesScale = new Float32Array(SPECIES_LIST.length);
@@ -109,6 +110,9 @@ export class Renderer {
     for (const c of CASTE_DEFS) {
       const entry = this.sprites.caste(c.key);
       this._casteTex[c.id] = entry ? entry.textures : null;
+      // Fernansicht: beinlos, ein Bild. Siehe drawAntFar in sprites.js.
+      const fern = this.sprites.get('antfar_' + c.key);
+      this._casteFarTex[c.id] = fern ? fern.textures[0] : null;
       // Unterlinear: eine Koenigin (size 4) soll deutlich groesser wirken,
       // aber nicht den halben Tunnel fuellen.
       this._casteScale[c.id] = baseScale * Math.pow(c.size, RENDER.SIZE_EXPONENT);
@@ -405,6 +409,7 @@ export class Renderer {
     const pool = this.entityPool;
     const cs = WORLD.CELL_SIZE;
     const vis = this.camera.visibleCells(RENDER.CULL_MARGIN, this._vis);
+    const fern = this.camera.zoom < RENDER.ANT_DETAIL_ZOOM;
 
     // Koloniefarben auffrischen (wenige Eintraege).
     for (const c of this.world.colonies.colonies) this._colonyColor[c.id] = c.color;
@@ -427,10 +432,22 @@ export class Renderer {
           this.entityRoot.addChild(s);
         }
         const caste = ants.caste[i];
-        const textures = this._casteTex[caste];
-        if (!textures) continue;
-        const frame = ((ants.anim[i] | 0) % textures.length + textures.length) % textures.length;
-        s.texture = textures[frame];
+        /**
+         * AUFLOESUNGSSTUFE NACH ZOOM. Nah zeigt das Spiel das ganze Tier
+         * mit laufenden Beinen; fern nur einen gerichteten Strich. Bei
+         * Zoom 3 war eine Ameisenstrasse aus zweihundertachtzig
+         * vollstaendigen Insekten ein unlesbares Gekritzel.
+         */
+        if (fern) {
+          const ft = this._casteFarTex[caste];
+          if (!ft) continue;
+          s.texture = ft;
+        } else {
+          const textures = this._casteTex[caste];
+          if (!textures) continue;
+          const frame = ((ants.anim[i] | 0) % textures.length + textures.length) % textures.length;
+          s.texture = textures[frame];
+        }
         s.position.set(ax * cs, ay * cs);
         s.rotation = ants.dir[i];
         const sc = this._casteScale[caste] * ants.phenoSize[i];

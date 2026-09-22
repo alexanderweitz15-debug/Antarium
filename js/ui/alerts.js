@@ -58,9 +58,14 @@ export class AlertView {
     close.addEventListener('click', () => box.remove());
     box.appendChild(close);
     this.el.appendChild(box);
-    setTimeout(() => { box.classList.add('fade'); }, 9000);
-    setTimeout(() => { box.remove(); }, 10000);
-    while (this.el.children.length > 4) this.el.removeChild(this.el.firstChild);
+    /**
+     * Kuerzer und weniger. Vier gestapelte Karten zu je zehn Sekunden
+     * standen dauerhaft ueber der Karte – im Bildschirmabzug verdeckten
+     * drei davon das halbe Geschehen, auf das sie hinweisen wollten.
+     */
+    setTimeout(() => { box.classList.add('fade'); }, 5000);
+    setTimeout(() => { box.remove(); }, 6000);
+    while (this.el.children.length > 2) this.el.removeChild(this.el.firstChild);
   }
 }
 

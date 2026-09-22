@@ -528,6 +528,35 @@ async function boot() {
   const resources = new ResourceBar($('resources'), world);
 
   /**
+   * PANELS EINKLAPPEN. Im Bildschirmabzug nahmen Werkzeugspalte, rechte
+   * Spalte und Ereignisfenster zusammen fast die halbe Flaeche; die Karte
+   * war ein Streifen in der Mitte. Ein Klick auf die Ueberschrift klappt
+   * ein Panel zu einer Titelzeile zusammen. Der Zustand haelt ueber die
+   * Sitzung hinaus.
+   */
+  const PANEL_ZU = 'antarium.panels';
+  let zugeklappt = new Set();
+  try {
+    const raw = localStorage.getItem(PANEL_ZU);
+    if (raw) zugeklappt = new Set(JSON.parse(raw));
+  } catch { /* gesperrter Speicher: alles offen */ }
+  for (const panel of document.querySelectorAll('#panel-tools, #panel-colonies, #panel-legend, #panel-log')) {
+    const h = panel.querySelector('h2');
+    if (!h) continue;
+    h.classList.add('foldable');
+    h.title = 'Auf- und zuklappen';
+    if (zugeklappt.has(panel.id)) panel.classList.add('folded');
+    h.addEventListener('click', (e) => {
+      // Schalter IM Titel (Filter, Schliessen) duerfen nicht mitklappen.
+      if (e.target.closest('button, input, label, select')) return;
+      panel.classList.toggle('folded');
+      if (panel.classList.contains('folded')) zugeklappt.add(panel.id);
+      else zugeklappt.delete(panel.id);
+      try { localStorage.setItem(PANEL_ZU, JSON.stringify([...zugeklappt])); } catch { /* egal */ }
+    });
+  }
+
+  /**
    * Klappmenues der Kopfzeile. Eines offen, alle anderen zu; ein Klick
    * irgendwo sonst schliesst. Die Schalter darin sind dieselben Elemente
    * mit denselben IDs wie vorher – die Tastenkuerzel merken vom Umbau
