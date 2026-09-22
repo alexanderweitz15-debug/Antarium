@@ -94,6 +94,32 @@ export class StatsPanel {
       parts.push('</table>');
     }
 
+    /**
+     * WER KAEMPFT GERADE GEGEN WEN. Die Beziehungsmatrix darueber sagt,
+     * wer verfeindet IST; sie sagt nicht, wo gerade Blut fliesst. Zwei
+     * Voelker koennen sich seit zehn Minuten hassen und sich nie begegnen.
+     * Hier steht nur, was in den letzten Sekunden wirklich passiert ist.
+     */
+    const fronten = w.combat.activePairs(w.tick);
+    if (fronten.length) {
+      parts.push('<h3>Laufende Kaempfe</h3><table class="stat-table">');
+      for (const f of fronten) {
+        const A = w.colonies.get(f.a), B = w.colonies.get(f.b);
+        if (!A || !B) continue;
+        const ebene = w.levels.get(f.ort[0]);
+        parts.push('<tr><td>'
+          + '<span class="swatch" style="background:' + A.colorCss + '"></span> '
+          + esc(A.name) + ' &#9876; '
+          + '<span class="swatch" style="background:' + B.colorCss + '"></span> '
+          + esc(B.name)
+          + '</td><td title="Gefallene je Seite">'
+          + f.tote[0] + ' : ' + f.tote[1]
+          + '</td><td>' + f.hits + ' Treffer</td><td>'
+          + (ebene ? esc(ebene.name) : '?') + '</td></tr>');
+      }
+      parts.push('</table>');
+    }
+
     // --- Bauwerke und Forschung je Volk
     if (living.some((c) => c.researched && c.researched.size)) {
       parts.push('<h3>Forschung und Bauwerke</h3><table class="stat-table">');

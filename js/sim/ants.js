@@ -17,7 +17,7 @@
 
 import {
   ANTS, LIMITS, PORTALS, DIG, PHERO, FOOD, NUTRITION, LIFE, NUTRIENT,
-  FORTIFY, STABILITY, DAYNIGHT, GODMODE, TRAIT_CFG, BUILD,
+  FORTIFY, STABILITY, DAYNIGHT, GODMODE, TRAIT_CFG, BUILD, DIGSCENT,
 } from '../config.js';
 import { LEVEL_KIND } from './levels.js';
 import { CASTE, casteDef } from './castes.js';
@@ -55,6 +55,7 @@ export const ANT_STATE = {
   RAID: 18,        // unterwegs zu einem fremden Nest
   LOOT: 19,        // mit Beute auf dem Heimweg
   FETCH: 20,       // unterwegs zu einer Materialfundstelle
+  AID: 21,         // unterwegs zu einem bedraengten Verbuendeten
 };
 
 export const ANT_STATE_LABEL = {
@@ -134,6 +135,9 @@ function materialUnder(level, x, y, colony, rng) {
   return null;
 }
 
+/** Abstand, in dem ein Hilfstrupp vor dem fremden Tor haelt (Zellen). */
+const DIPLO_AID_HOLD = 7;
+
 const TWO_PI = Math.PI * 2;
 
 /** Kuerzeste Winkeldifferenz nach [-pi, pi]. */
@@ -188,6 +192,8 @@ export class Ants {
     this.carryMul = new Float32Array(capacity);
     /** Restticks einer Giftwirkung. */
     this.poison = new Uint16Array(capacity);
+    /** Zellindizes bewachter Blattlauskolonien (in rebuildBuckets gefuellt). */
+    this.guarded = new Set();
     this.senseMul = new Float32Array(capacity);
     this.trailMul = new Float32Array(capacity);
     this.nurseMul = new Float32Array(capacity);
@@ -377,6 +383,9 @@ export class Ants {
   rebuildBuckets(levelManager, colonyManager) {
     for (const b of this.buckets.values()) b.count = 0;
     if (colonyManager) for (const c of colonyManager.colonies) c.resetCounts();
+    this.guarded.clear();
+    const surfaceId = levelManager.surface ? levelManager.surface.id : -1;
+    const sw = levelManager.surface ? levelManager.surface.w : 1;
 
     for (let i = 0; i < this.high; i++) {
       if (!this.alive[i]) continue;
@@ -386,6 +395,15 @@ export class Ants {
       if (colonyManager) {
         const c = colonyManager.get(this.colony[i]);
         if (c) c.countAnt(this.caste[i], lv, this.state[i]);
+      }
+      /**
+       * Bewachte Blattlauszellen mitfuehren. Das laeuft hier mit, weil
+       * diese Schleife ohnehin jeden Tick ueber alle Ameisen geht – so
+       * kostet es nichts extra und der Stand ist nie veraltet. Gespeichert
+       * werden muss er nicht: er steckt in den Zustaenden der Ameisen.
+       */
+      if (lv === surfaceId && this.state[i] === ANT_STATE.GUARD && this.targetX[i] >= 0) {
+        this.guarded.add(this.targetY[i] * sw + this.targetX[i]);
       }
     }
     for (const lvl of levelManager.levels) {
@@ -626,6 +644,68 @@ export class Ants {
        * Nahrung trotzdem mit – ein Umweg ist kein Grund, an einem
        * Zuckerwuerfel vorbeizulaufen.
        */
+      /**
+       * WACHE AN DEN BLATTLAEUSEN. Die Ameise bleibt in Reichweite ihrer
+       * Quelle, meldet Feinde und melkt nebenbei. Ist die Quelle erschoepft
+       * oder die Zeit um, geht sie wieder sammeln.
+       */
+      case ANT_STATE.GUARD: {
+        const gx = this.targetX[i], gy = this.targetY[i];
+        if (this.timer[i] === 0 || gx < 0
+            || level.cells[gy * level.w + gx] !== SURFACE_CELL.APHIDS) {
+          this.state[i] = ANT_STATE.EXPLORE;
+          this.timer[i] = rng.intRange(120, 600);
+          this.targetX[i] = -1;
+          break;
+        }
+        if (colony) colony.guards++;
+        const dx = gx + 0.5 - this.x[i], dy = gy + 0.5 - this.y[i];
+        const d2 = dx * dx + dy * dy;
+        if (d2 > LIFE.GUARD_RADIUS * LIFE.GUARD_RADIUS) {
+          this.dir[i] += angleDelta(this.dir[i], Math.atan2(dy, dx)) * 0.4;
+        } else {
+          /**
+           * Die Wache ERNTET NICHT. Ein erster Anlauf liess sie nebenbei
+           * melken – und weil das Abliefern sie heimschickte, war der
+           * Posten nach durchschnittlich fuenfzig Ticks wieder verwaist.
+           * Sie steht, haelt Weidegaenger fern und ruft ueber die Spur
+           * Sammlerinnen herbei; geerntet wird von denen.
+           */
+          this.dir[i] += rng.range(-0.5, 0.5);
+        }
+        // Wachen legen eine kraeftige Heimspur, damit Nachschub kommt
+        if (phero) phero.deposit(cid, PH.FOOD, cx, cy, PHERO.DEPOSIT.FOOD * 0.8,
+          dominantNutrient(SURFACE_CELL.APHIDS));
+        break;
+      }
+
+      /**
+       * BEISTAND. Diese Ameise ist auf dem Weg zu einem bedraengten
+       * Verbuendeten. Sie laeuft zu dessen Eingang und geht hinein; drinnen
+       * kaempft sie ueber die normale Nahkampfregel mit, weil der Gegner
+       * dort weder ihr eigenes Volk noch ein Verbuendeter ist.
+       */
+      case ANT_STATE.AID: {
+        if (this.timer[i] === 0 || this.targetX[i] < 0) {
+          this.state[i] = ANT_STATE.RETURN;
+          this.timer[i] = 1800;
+          this.targetX[i] = -1;
+          break;
+        }
+        const ax = this.targetX[i] + 0.5, ay = this.targetY[i] + 0.5;
+        const adx = ax - this.x[i], ady = ay - this.y[i];
+        const ad2 = adx * adx + ady * ady;
+        if (ad2 > DIPLO_AID_HOLD * DIPLO_AID_HOLD) {
+          this.dir[i] += angleDelta(this.dir[i], Math.atan2(ady, adx)) * 0.35
+            + rng.range(-0.1, 0.1);
+        } else {
+          // Angekommen: vor dem Tor patrouillieren und alles abfangen
+          this.dir[i] += rng.range(-0.6, 0.6);
+          if (phero) phero.deposit(cid, PH.ALARM, cx, cy, PHERO.DEPOSIT.ALARM * 0.4);
+        }
+        break;
+      }
+
       case ANT_STATE.FETCH: {
         if (this.carryType[i] !== CARRY.NONE || !colony || !colony.materialSpot
             || this.timer[i] === 0) {
@@ -681,6 +761,32 @@ export class Ants {
         // Nahrung unter den Fuessen?
         if (this.carryType[i] === CARRY.NONE && ctx.food) {
           const cell = level.cells[cy * level.w + cx];
+          /**
+           * BLATTLAEUSE BEWACHEN. Wer eine ergiebige Blattlauskolonie
+           * findet, bleibt mit einer gewissen Wahrscheinlichkeit als Wache
+           * dort – und zwar STATT zu ernten. Marienkaefer meiden bewachte
+           * Blattlaeuse (siehe creatures.js _graze); damit bekommt der
+           * Nahrungskonkurrent einen Gegenspieler.
+           *
+           * Die Pruefung gehoert vor die Aufnahme. Ein erster Anlauf liess
+           * die Wache ihre volle Fuhre drei Minuten lang mit sich
+           * herumtragen – der Zuckervorrat der Kolonie fiel dabei von 183
+           * auf unter 10.
+           */
+          if (cell === SURFACE_CELL.APHIDS && colony
+              && level.meta[cy * level.w + cx] > LIFE.GUARD_MIN_AMOUNT
+              && colony.guards < LIFE.GUARD_MAX
+              && rng.chance(LIFE.GUARD_CHANCE)) {
+            this.state[i] = ANT_STATE.GUARD;
+            this.targetX[i] = cx;
+            this.targetY[i] = cy;
+            this.timer[i] = LIFE.GUARD_TICKS;
+            if (phero) {
+              phero.deposit(cid, PH.FOOD, cx, cy, PHERO.DEPOSIT.FOOD * 2.2,
+                dominantNutrient(cell));
+            }
+            break;
+          }
           if (isFoodCell(cell) && level.meta[cy * level.w + cx] > 0) {
             const got = ctx.food.take(level, cx, cy, FOOD.PICKUP * this.carryMul[i]);
             if (got > 0) {
@@ -689,11 +795,11 @@ export class Ants {
               this.carryNutrient[i] = dominantNutrient(cell);
               this.carryAmount[i] = got;
               this.trip[i] = 0;                       // neue Spur ab hier
-              this._beginReturn(level, i, ctx);
               // Fundstelle kraeftig markieren
               if (phero) {
                 phero.deposit(cid, PH.FOOD, cx, cy, PHERO.DEPOSIT.FOOD * 2.2, this.carryNutrient[i]);
               }
+              this._beginReturn(level, i, ctx);
               break;
             }
           }
@@ -869,6 +975,25 @@ export class Ants {
   // Nest: Abliefern, Graben, Brutpflege
   // -------------------------------------------------------------------------
   _nestBehaviour(level, i, ctx, colony, fields, rng) {
+    /**
+     * Im Nest eines VERBUENDETEN gibt es nichts zu arbeiten – nur zu
+     * kaempfen. Ist die Luft rein, geht die Helferin wieder heim; ohne
+     * diese Regel bliebe sie dort und fehlte dem eigenen Volk.
+     */
+    if (level.colonyId >= 0 && level.colonyId !== this.colony[i]
+        && this.state[i] !== ANT_STATE.TRANSIT) {
+      const host = ctx.colonies.get(level.colonyId);
+      if (host && ctx.diplomacy.allied(this.colony[i], host.id)) {
+        // Gaeste haben im fremden Nest nichts verloren – zurueck zum Tor
+        this.state[i] = ANT_STATE.RETURN;
+        if (this.timer[i] === 0) this.timer[i] = 2400;
+        if (!fields || !this._steerField(level, i, fields.entrance, rng)) {
+          this.dir[i] += rng.range(-0.4, 0.4);
+        }
+        return;
+      }
+    }
+
     switch (this.state[i]) {
       case ANT_STATE.DELIVER: {
         const carried = this.carryType[i];
@@ -991,19 +1116,32 @@ export class Ants {
       }
 
       case ANT_STATE.DIG: {
-        if (!colony || colony.digActive < 0 || this.timer[i] === 0) {
+        // Jede Nest-Ebene hat ihre eigene Baustelle, siehe construction.js.
+        const dig = colony ? ctx.construction.peek(colony, level.id) : undefined;
+        if (!dig || this.timer[i] === 0 || (dig.active < 0 && dig.descend < 0)) {
           this.state[i] = ANT_STATE.EXPLORE;
           this.timer[i] = rng.intRange(ANTS.NEST_STAY_MIN, ANTS.NEST_STAY_MAX);
           break;
         }
-        const tx = (colony.digActive % level.w) + 0.5;
-        const ty = ((colony.digActive / level.w) | 0) + 0.5;
+        /**
+         * Hier gibt es nichts zu graben, aber ein Stockwerk tiefer schon:
+         * zum Schacht laufen. Das Grabfeld zeigt bereits dorthin, den
+         * Uebertritt macht _tryEnter beim Betreten der Portalzelle.
+         */
+        if (dig.active < 0) {
+          if (!fields || !this._steerField(level, i, fields.dig, rng)) {
+            this.dir[i] += rng.range(-ANTS.WANDER_TURN, ANTS.WANDER_TURN);
+          }
+          break;
+        }
+        const tx = (dig.active % level.w) + 0.5;
+        const ty = ((dig.active / level.w) | 0) + 0.5;
         const dx = tx - this.x[i], dy = ty - this.y[i];
         if (dx * dx + dy * dy <= DIG.REACH * DIG.REACH) {
           this.dir[i] = Math.atan2(dy, dx);
           this.anim[i] += 0.35;
           // Gen der Kolonie mal Charakter der einzelnen Ameise
-          const isBuild = colony.digTarget && colony.digTarget[0];
+          const isBuild = dig.target[0];
           const rate = DIG.RATE_PER_ANT
             * (colony.genome ? 0.6 + colony.genome.grabgeschwindigkeit : 1)
             * (isBuild ? this.buildMul[i] : this.workMul[i]);
@@ -1014,7 +1152,7 @@ export class Ants {
              * haengt der ganze Bauzweig auf trockenen Karten (Steppe) in
              * der Luft: dort gibt es kein Wasser und damit keinen Lehmsaum.
              */
-            if (colony.lastDugType === NEST_CELL.SOIL
+            if (dig.lastDugType === NEST_CELL.SOIL
                 && colony.knownMaterials && colony.knownMaterials.has('clay')
                 && (colony.stores.clay || 0) < BUILD.MATERIAL_CAP
                 && ty > BUILD.CLAY_DEPTH && rng.chance(BUILD.CLAY_DIG_CHANCE)) {
@@ -1025,7 +1163,7 @@ export class Ants {
               this.timer[i] = 1200;
               break;
             }
-            if (colony.lastDugType === NEST_CELL.PEBBLE) {
+            if (dig.lastDugType === NEST_CELL.PEBBLE) {
               // Kiesel ist Baumaterial und geht in die Vorratskammer
               this.carryType[i] = CARRY.PEBBLE;
               this.carryAmount[i] = FORTIFY.PEBBLE_PER_CELL;
@@ -1047,6 +1185,16 @@ export class Ants {
 
       case ANT_STATE.RAID: {
         if (this.timer[i] === 0) { this._abortRaid(level, i, ctx); break; }
+        /**
+         * Ist beim Gegner nichts mehr zu holen, geht es heim. Ohne das
+         * standen nach dem Sieg vierzig Raeuberinnen noch zweitausend
+         * Sekunden lang im leeren Nest herum, waehrend zu Hause die
+         * Sammlerinnen fehlten.
+         */
+        if (this.raidTarget[i] >= 0) {
+          const feind = ctx.colonies.get(this.raidTarget[i]);
+          if (!feind || !feind.alive) { this._abortRaid(level, i, ctx); break; }
+        }
         // Im EIGENEN Nest zuerst hinaus – sonst sucht die Raeuberin im
         // eigenen Bau nach Beute und der Raubzug kommt nie los.
         if (level.colonyId === this.colony[i]) {
@@ -1176,12 +1324,25 @@ export class Ants {
             colony.builders++;
             break;
           }
-          if (colony.digActive >= 0
-              && colony.diggers < Math.max(3, inNest * DIG.DIGGER_SHARE)
+          const digHere = ctx.construction.peek(colony, level.id);
+          const digsHere = colony.diggersByLevel.get(level.id) || 0;
+          /**
+           * Grabduft des Spielers hebt die Obergrenze an: je staerker
+           * bemalt, desto mehr Ameisen gehen hin. Das ist der Unterschied
+           * zwischen "da soll gegraben werden" und "DA soll gegraben
+           * werden".
+           */
+          const scent = ctx.digScent ? ctx.digScent.total(level.id) : 0;
+          const extra = scent > 0
+            ? Math.min(DIGSCENT.MAX_EXTRA_DIGGERS, scent * DIGSCENT.DIGGERS_PER_POINT)
+            : 0;
+          if (digHere !== undefined && (digHere.active >= 0 || digHere.descend >= 0)
+              && digsHere < Math.max(3, inNest * DIG.DIGGER_SHARE) + extra
               && rng.chance(digChance)) {
             this.state[i] = ANT_STATE.DIG;
             this.timer[i] = DIG.JOB_TIMEOUT;
             colony.diggers++;
+            colony.diggersByLevel.set(level.id, digsHere + 1);
             break;
           }
         }
@@ -1274,8 +1435,50 @@ export class Ants {
   _tryEnter(level, i, portal, ctx) {
     const st = this.state[i];
     const raider = st === ANT_STATE.RAID;
-    if (st !== ANT_STATE.RETURN && st !== ANT_STATE.LOOT && !raider) return;
-    if (!ctx.portals.canEnter(portal, level.id, this.colony[i], raider)) return;
+    const helper = st === ANT_STATE.AID;
+    /**
+     * Graeberinnen duerfen durch das EIGENE Tor – so besiedeln sie ein neu
+     * geoeffnetes Stockwerk (siehe World.expandNest). Fremde Tore bleiben
+     * ihnen verschlossen, sonst spazieren sie in Nachbarnester.
+     */
+    const digger = st === ANT_STATE.DIG && portal.colonyId === this.colony[i];
+    const escapingNow = level.colonyId >= 0 && level.colonyId !== this.colony[i];
+    if (st !== ANT_STATE.RETURN && st !== ANT_STATE.LOOT
+        && !raider && !helper && !digger && !escapingNow) return;
+    /**
+     * Verbuendete duerfen durch fremde Tore – aber nur HINAUS, nicht
+     * hinein. Zwei Befunde stecken dahinter:
+     *
+     * 1. Liess man sie nur hinein, sassen im Test dreiundsiebzig
+     *    Helferinnen dauerhaft im Nest des Verbuendeten fest.
+     * 2. Liess man sie hinein UND hinaus, wurde der Verbuendete dadurch
+     *    SCHWAECHER statt staerker: im Gang teilt sich der Schaden auf
+     *    alle Angreifer auf (Engstellenregel), und zusaetzliche
+     *    befreundete Koerper verduennen die eigenen Treffer. B ueberlebte
+     *    mit Hilfe schlechter als ohne (60 gegen 101 Ameisen).
+     *
+     * Deshalb halten Helferinnen DRAUSSEN vor dem Eingang, wo im offenen
+     * Feld jeder Schlag voll zaehlt. Wer drinnen ist, darf heraus.
+     */
+    /**
+     * HERAUS DARF IMMER, WER DRINNEN IST.
+     *
+     * canEnter fragt nur, ob jemand ein fremdes Tor benutzen darf – nicht,
+     * in welche Richtung. Eine Raeuberin kam damit hinein, verlor beim
+     * Sieg ihren Raubzug-Zustand und war fortan keine Raeuberin mehr:
+     * gemessen sassen nach dem Untergang des Gegners einundfuenfzig Rote
+     * dauerhaft in dessen leerem Nest. Wer auf einer fremden Ebene steht,
+     * darf sie deshalb ausnahmslos wieder verlassen.
+     */
+    const escaping = level.colonyId >= 0 && level.colonyId !== this.colony[i];
+    const ally = escaping || (st === ANT_STATE.RETURN
+      && ctx.diplomacy.allied(this.colony[i], portal.colonyId));
+    if (!ctx.portals.canEnter(portal, level.id, this.colony[i], raider, ally)) return;
+    // Ein verschlossenes Tor aufzubrechen kostet Kraft.
+    if (ctx.portals.isForcing(portal, this.colony[i], ally)) {
+      this.hp[i] -= PORTALS.FORCE_DAMAGE;
+      if (this.hp[i] <= 0) { this._die(i, level, ctx, 'Tor'); return; }
+    }
     ctx.portals.consume(portal, level.id);
     this.state[i] = ANT_STATE.TRANSIT;
     this.transit[i] = PORTALS.TRANSIT_TICKS;

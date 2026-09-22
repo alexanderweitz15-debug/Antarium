@@ -61,7 +61,7 @@ export const WORLD = {
 // ---------------------------------------------------------------------------
 export const LIMITS = {
   MAX_COLONIES: 8,
-  MAX_NEST_LEVELS: 12,
+  MAX_NEST_LEVELS: 20,
   /** Gesamtzahl Ameisen ueber ALLE Ebenen. */
   MAX_ANTS: 6000,
   MAX_PREDATORS: 64,
@@ -84,6 +84,27 @@ export const PORTALS = {
    * Verhindert Ping-Pong direkt am Ausgang.
    */
   REENTRY_COOLDOWN: 45,
+  /**
+   * EIN GESCHLOSSENES TOR IST EINE ENGSTELLE, KEINE MAUER.
+   *
+   * Vorher wies canEnter Angreiferinnen an einem geschlossenen Tor ab. Das
+   * ergab eine Verklemmung: Angreifer davor hoben die Bedrohungsstufe, die
+   * Bedrohungsstufe schloss die Tore, die geschlossenen Tore hielten die
+   * Angreifer draussen, und weil sie draussen blieben, blieb die Bedrohung
+   * hoch. Gemessen in einem erzwungenen Krieg ueber neuntausend Ticks:
+   * neunzig Ameisen im Raubzug-Zustand, davon fuenfundachtzig auf der
+   * Oberflaeche und unveraendert VIER im Nest des Gegners – dieselben
+   * vier, die vor dem Schliessen hineingekommen waren. Ein Volk, das
+   * zumacht, war unangreifbar.
+   *
+   * Jetzt kann ein Tor aufgebrochen werden, aber nur im Gaensemarsch und
+   * nicht umsonst. Zusammen mit der Engstellenregel im Kampf heisst das:
+   * Zumachen lohnt sich weiterhin, es kauft Zeit und Stellung – es gewinnt
+   * nur nicht mehr von allein.
+   */
+  FORCED_CAPACITY: 1,
+  /** Lebenspunkte, die das Aufbrechen die Angreiferin kostet. */
+  FORCE_DAMAGE: 0.12,
 };
 
 // ---------------------------------------------------------------------------
@@ -283,6 +304,169 @@ export const DIG = {
   JOB_TIMEOUT: 900,
   /** Ticks, die eine Ameise nach dem Abladen an der Oberflaeche bleibt. */
   DUMP_STAY: [60, 200],
+
+  // --- Tiefere Nest-Ebenen (Phase 11) -------------------------------------
+  /**
+   * Ein grosses Volk graebt sich irgendwann eine STOCKWERK TIEFER. Die neue
+   * Ebene haengt ueber einen Schacht (ein ganz normales Portal, nur Nest zu
+   * Nest) an der bisher tiefsten. Das ist teuer – jede Ebene kostet rund ein
+   * Megabyte fuer Gitter, Distanzfelder und Chunk-Texturen – deshalb sind
+   * die Bedingungen streng.
+   */
+  EXPAND_INTERVAL: 600,
+  /**
+   * So gross muss das Volk sein, bevor es ueberhaupt tiefer geht.
+   *
+   * Gemessen ueber zwanzig Laeufe auf allen fuenf Karten, je zehn
+   * Minuten Spielzeit – Anteil der Voelker, die ein zweites Stockwerk
+   * oeffnen:
+   *
+   *   MIN_POP 220 / LEVEL_MIN 380  ->   2.3 %   (praktisch unsichtbar)
+   *   MIN_POP 180 / LEVEL_MIN 300  ->   8.6 %
+   *   MIN_POP 150 / LEVEL_MIN 240  ->  16.0 %   <- gewaehlt
+   *
+   * Die Ausbauer haben dabei im Schnitt 309 Ameisen, der Durchschnitt
+   * aller Voelker liegt bei 62. Es bleibt also ein Ereignis der grossen
+   * Voelker und wird nicht zur Regel.
+   */
+  EXPAND_MIN_POP: 150,
+  /**
+   * So weit muss die unterste Ebene ausgebaut sein, bevor der Abstieg
+   * lohnt. Ohne diese Schwelle graebt ein Volk lieber nach unten als in
+   * die Breite und laesst halbe Ebenen leer.
+   */
+  EXPAND_LEVEL_MIN: 240,
+  /** Hoechstzahl Ebenen JE Volk (die erste zaehlt mit). */
+  EXPAND_MAX_PER_COLONY: 3,
+  /**
+   * Der Abstieg kostet KEINEN Vorrat. Ein Festpreis von neunzig Zucker war
+   * der erste Entwurf und hat das Feature stillschweigend abgeschaltet: ein
+   * Volk mit siebenhundert Ameisen haelt sein Lager dauerhaft bei etwa
+   * sechzig, egal wie gross die Kapazitaet ist. Die Kosten des Abstiegs
+   * sind die Grabarbeit, nicht ein Betrag aus der Kammer.
+   */
+  /** Tiefe des Landeschachts in der neuen Ebene. */
+  EXPAND_LANDING_DEPTH: 10,
+  /**
+   * Anteil des Volkes, der auf einem Stockwerk stehen soll, bevor die Ebene
+   * darueber wieder fuer sich selbst graebt.
+   *
+   * EIN TIEFES STOCKWERK LIEGT WEIT VON DER NAHRUNG WEG. Jede Ameise, die
+   * dort steht, legt fuer jeden Futtergang zwei zusaetzliche Portale
+   * zurueck. Eine zu grosse Besatzung verhungert das Volk – gemessen ueber
+   * drei Karten zu je fuenfzig Minuten:
+   *
+   *   0.18 ->  4 Voelker,   4 Ameisen, 478 Hungertote
+   *   0.10 ->  1 Volk,      1 Ameise,  470 Hungertote
+   *   0.06 ->  9 Voelker, 662 Ameisen, 283 Hungertote
+   *   0.03 -> 11 Voelker, 597 Ameisen,  96 Hungertote   <- gewaehlt
+   *
+   * Bei 0.18 und 0.10 hat am Ende KEIN Volk mehr eine zweite Ebene: sie
+   * sterben vorher. Der eigentliche Befund dahinter: ein Stockwerk kostet
+   * Wege und liefert bisher nur Platz. Erst mit den Minen (Bauwerke auf
+   * einer Materialader) verdient es seinen Unterhalt – dann darf die
+   * Besatzung wieder groesser werden.
+   */
+  EXPAND_STAFF_SHARE: 0.03,
+  /**
+   * Anteil WAEHREND GEGRABEN WIRD. Baukolonne und Standbesatzung sind
+   * zweierlei, und sie in eine Zahl zu packen war der Fehler: gross genug
+   * zum Ausbauen hiess gross genug zum Verhungern, klein genug zum
+   * Ueberleben hiess, dass die Ebene nie ueber den Landeplatz hinauskam
+   * (176 von 170 Zellen nach dreitausend Ticks). Die Kolonne geht hin,
+   * graebt und loest sich wieder auf; die Besatzung bleibt.
+   */
+  EXPAND_WORK_SHARE: 0.14,
+  /** Abschaltschwelle als Vielfaches davon (Hysterese, siehe oben). */
+  EXPAND_STAFF_HYST: 1.5,
+};
+
+// ---------------------------------------------------------------------------
+// SPIELMODI (Phase 12)
+// ---------------------------------------------------------------------------
+/**
+ * Ein Modus bestimmt, WAS der Spieler darf und WAS er sieht. Die Simulation
+ * bleibt dieselbe – es waere ein Fehler, zwei Regelwerke zu pflegen, nur
+ * damit sich die Oberflaeche anders anfuehlt.
+ *
+ *   tools   : Werkzeugschluessel, die erlaubt sind. null = alle.
+ *   deny    : Werkzeuge, die verboten sind (gilt zusaetzlich zu tools).
+ *   hud     : Schaltergruppen der Kopfzeile, die sichtbar sind.
+ *   own     : true = der Spieler fuehrt EIN Volk und sieht dessen Vorraete.
+ *   godbar  : true = goettliche Eingriffe stehen zur Verfuegung.
+ */
+export const MODES = {
+  sandkasten: {
+    key: 'sandkasten',
+    name: 'Sandkasten',
+    tagline: 'Alles erlaubt. Zusehen, eingreifen, ausprobieren.',
+    desc: 'Die vollstaendige Simulation mit allen Werkzeugen: Voelker gruenden, '
+      + 'Wetter machen, Raeuber setzen, Genome verschieben. Kein Ziel, keine '
+      + 'Niederlage – ein Terrarium, in das man hineingreifen kann.',
+    tools: null,
+    deny: [],
+    own: false,
+    godbar: true,
+  },
+  feldzug: {
+    key: 'feldzug',
+    name: 'Feldzug',
+    tagline: 'Ein Volk. Keine Wunder. Fuehren statt zaubern.',
+    desc: 'Du fuehrst ein einziges Volk und hast nur Mittel, die eine Koenigin '
+      + 'wirklich haette: Duftstoffe, Grabbefehle, Bauplaetze. Meteor, Seuche '
+      + 'und Segen bleiben aus – wer gewinnen will, muss wirtschaften.',
+    /**
+     * Erlaubt ist, was eine Kolonie selbst kann: riechen, graben, bauen,
+     * Krieg erklaeren. Nicht erlaubt ist alles, was von aussen in die Welt
+     * greift. Genau diese Grenze macht den Unterschied zwischen einem
+     * Gott und einem Feldherrn.
+     */
+    /**
+     * Nur DUEFTE. Jedes erlaubte Mittel wird zu Arbeit, die das Volk
+     * selbst leisten muss: ein Grabbefehl muss gegraben, ein Bauauftrag
+     * gebaut, ein Kriegsduft ausgefochten werden.
+     *
+     * Der erste Entwurf liess zusaetzlich Verstaerkung, Vorrat fuellen und
+     * Sofortbau zu. Alle drei widersprechen dem, was der Modus verspricht:
+     * sie setzen Soldatinnen aus dem Nichts, schenken Nahrung und bauen
+     * umsonst. Wer wirtschaften soll, darf sie nicht haben.
+     */
+    tools: ['digscent', 'clearscent', 'scent', 'warscent', 'peacescent', 'allyscent'],
+    deny: [],
+    own: true,
+    godbar: false,
+  },
+};
+export const MODE_LIST = [MODES.sandkasten, MODES.feldzug];
+export const DEFAULT_MODE = 'sandkasten';
+
+// ---------------------------------------------------------------------------
+// GRABDUFT – der Spieler malt, wo gegraben wird (Phase 14)
+// ---------------------------------------------------------------------------
+export const DIGSCENT = {
+  /** Hoechstwert einer Zelle (Uint8). */
+  MAX: 255,
+  /** Ablagemenge je bemalter Zelle und Pinselstrich. */
+  DEPOSIT: 110,
+  /** Ticks zwischen zwei Verdunstungsdurchlaeufen. */
+  DECAY_INTERVAL: 12,
+  /**
+   * Restanteil je Durchlauf. 0.985 alle zwoelf Ticks heisst: ein einmal
+   * gemalter Befehl haelt rund zweieinhalb Minuten Spielzeit durch. Lange
+   * genug, um einen Gang fertig zu graben, kurz genug, dass eine
+   * vergessene Markierung das Volk nicht auf Dauer bindet.
+   */
+  DECAY: 0.985,
+  /** Hoechstzahl bemalter Zellen je Ebene. */
+  MAX_ACTIVE: 4000,
+  /**
+   * So viele Graeberinnen je Duftpunkt zusaetzlich. Ein voll bemalter
+   * Gang von zwoelf Zellen ergibt rund 1300 Punkte und damit gut zwanzig
+   * Ameisen – ein sichtbarer Trupp, aber nicht das halbe Volk.
+   */
+  DIGGERS_PER_POINT: 0.016,
+  /** Obergrenze, damit ein zugemaltes Nest nicht alles zum Graben schickt. */
+  MAX_EXTRA_DIGGERS: 40,
 };
 
 // ---------------------------------------------------------------------------
@@ -383,6 +567,8 @@ export const FOOD = {
     meat:     { n: [0.05, 0.85, 0.10], max: 255, regrow: 0,   decay: 0.08 },
     seedpile: { n: [0.10, 0.20, 0.70], max: 255, regrow: 0,   decay: 0 },
   },
+  /** Bewachte Blattlaeuse wachsen so viel schneller nach (Symbiose). */
+  GUARD_REGROW: 6.0,
   /** Regionale Verteilung: Frequenz des Rauschens fuer Nahrungszonen. */
   REGION_FREQ: 0.009,
   /** Grunddichte der jeweiligen Quelle in ihrer Vorzugsregion. */
@@ -488,6 +674,17 @@ export const BROOD = {
 };
 
 export const LIFE = {
+  /**
+   * Blattlausbewachung. Blattlaeuse sind die wichtigste Zuckerquelle und
+   * werden von Marienkaefern abgeweidet – eine bewachte Kolonie ist vor
+   * ihnen sicher. So bekommt der Nahrungskonkurrent einen Gegenspieler.
+   */
+  GUARD_CHANCE: 0.08,
+  GUARD_TICKS: 3600,
+  GUARD_RADIUS: 4,
+  GUARD_MAX: 3,
+  /** Ab diesem Restbestand lohnt sich eine Wache. */
+  GUARD_MIN_AMOUNT: 8,
   /** Lebensdauer einer Arbeiterin in Ticks (Gen 0.5, Phaenotyp 1.0). */
   WORKER_LIFESPAN: 30000,
   QUEEN_LIFESPAN: 240000,
@@ -628,6 +825,8 @@ export const CREATURES = {
   MUTATION: 0.06,
   /** Wahrscheinlichkeit, dass ein erlegtes Tier Chitin hinterlaesst. */
   CHITIN_DROP: 0.55,
+  /** In diesem Umkreis schreckt eine Ameisenwache Weidegaenger ab. */
+  GUARD_SCARE: 5,
   /** Ameisen greifen Raeuber an, wenn mindestens so viele in der Naehe sind. */
   SWARM_COURAGE: 5,
   /** Schaden pro Tick je Ameise ueber der Schwelle. */
@@ -842,6 +1041,18 @@ export const FORTIFY = {
 // PHASE 5 – KAMPF, BEDROHUNG UND RAUBZUEGE
 // ===========================================================================
 export const COMBAT = {
+  /**
+   * Ticks, innerhalb derer ein Kampf als "laeuft gerade" gilt. Darunter
+   * zeigt die Oberflaeche das Paar als aktive Front an.
+   */
+  PAIR_RECENT: 180,
+  /**
+   * Nur jeder n-te Treffer wirft Funken. Bei fuenfhundert Kaempfenden
+   * waere ein Teilchen je Treffer und Tick nur noch ein roter Nebel –
+   * und genau die Stelle, an der man hinsehen soll, ginge unter.
+   */
+  HIT_FX_EVERY: 7,
+
   /** Reichweite eines Nahkampfangriffs in Zellen. */
   REACH: 1.3,
   /** Grundschaden pro Tick = Kastenschaden * DAMAGE_SCALE. */
@@ -984,8 +1195,13 @@ export const SETTINGS_DEFAULTS = {
 
 /** Schluessel im localStorage. */
 export const STORAGE = {
-  SETTINGS: 'formicarium.settings',
-  SAVE: 'formicarium.save',
+  SETTINGS: 'antarium.settings',
+  SAVE: 'antarium.save',
+  /** Schluessel aus der Zeit vor der Umbenennung (werden einmalig uebernommen). */
+  /** Zuletzt gewaehlter Spielmodus. */
+  MODE: 'antarium.mode',
+  SETTINGS_LEGACY: 'formicarium.settings',
+  SAVE_LEGACY: 'formicarium.save',
 };
 
 // ===========================================================================
@@ -1319,6 +1535,34 @@ export const DIPLO = {
   WAVE_MAX_STEPS: 6,
   /** Im Krieg werden auch kleine Voelker angegriffen (sonst ab 40 Tieren). */
   WAR_MIN_TARGET: 8,
+
+  /**
+   * BEISTAND UNTER VERBUENDETEN. Ein Buendnis, das nur "wir greifen uns
+   * nicht an" bedeutet, ist keines.
+   */
+  /** Ticks zwischen zwei Hilfstrupps desselben Volkes. */
+  AID_INTERVAL: 5400,
+  /** Ab dieser Bedrohungsstufe des Verbuendeten wird ausgerueckt. */
+  AID_THREAT: 2,
+  /** Anteil des eigenen Volkes, der hoechstens mitgeht. */
+  AID_SHARE: 0.35,
+  /** Kleiner als das rueckt niemand aus. */
+  AID_MIN_POP: 45,
+  /** So viele Soldatinnen muss das helfende Volk mindestens haben. */
+  AID_MIN_SOLDIERS: 10,
+  /** Ticks, die ein Hilfstrupp unterwegs bleibt, bevor er heimkehrt. */
+  AID_TIMEOUT: 5400,
+  /** Ticks zwischen zwei Nahrungshilfen. */
+  SHARE_INTERVAL: 600,
+  /**
+   * So viel behaelt der Geber mindestens (Anteil seiner Kapazitaet). Mit
+   * 0.55 gab er alle zwanzig Sekunden alles darueber ab – ueber acht
+   * Minuten war das fast sein gesamtes Lager. Es soll eine Geste sein,
+   * kein Aderlass.
+   */
+  SHARE_KEEP: 0.75,
+  /** So viel gibt er je Durchlauf ab (Anteil seiner Kapazitaet). */
+  SHARE_RATE: 0.015,
 };
 
 // ===========================================================================
@@ -1511,6 +1755,8 @@ export const BUILD = {
   YIELD: { clay: 3, lime: 2, chitin: 4 },
   /** Wahrscheinlichkeit, dass ein erlegtes Tier Chitin hinterlaesst. */
   CHITIN_DROP: 0.55,
+  /** In diesem Umkreis schreckt eine Ameisenwache Weidegaenger ab. */
+  GUARD_SCARE: 5,
   /** Lagerobergrenze je Material ohne Speicherbau. */
   MATERIAL_CAP: 300,
   /** Ein Geschuetz verbraucht Vorrat je Schuss. */

@@ -27,9 +27,11 @@ import {
   SURFACE_CELL, SURFACE_CELL_DEFS,
 } from './surface.js';
 import {
-  createNest, buildStartNest, randomAirCell, NEST_CELL, NEST_CELL_DEFS, CHAMBER,
+  createNest, buildStartNest, buildDeepLanding, randomAirCell,
+  NEST_CELL, NEST_CELL_DEFS, CHAMBER,
 } from './nest.js';
 import { PortalSystem } from './portals.js';
+import { DigScent } from './digscent.js';
 import { ColonyManager, updateColonyAI } from './colony.js';
 import { Ants, ANT_STATE, CARRY } from './ants.js';
 import { CASTE, casteDef } from './castes.js';
@@ -45,7 +47,7 @@ import { Diplomacy } from './diplomacy.js';
 import { Structures } from './structures.js';
 import { INTERVENTION_BY_KEY, updateInterventions } from './interventions.js';
 import { initNutrition, updateNutrition } from './nutrition.js';
-import { saveWorld, loadWorld } from './save.js';
+import { saveWorld, loadWorld, isSaveFile } from './save.js';
 import { newGenome, mutateGenome, geneSummary, copyGenome, crossGenome } from './genome.js';
 import { timeOfDay, lightAt, phaseAt } from './daynight.js';
 import { rollAntTraits, rollQueenTraits, applyQueenTraits } from './traits.js';
@@ -103,7 +105,17 @@ export class World {
     this.ants = new Ants();
     this.brood = new BroodPool();
     this.creatures = new Creatures();
+    /**
+     * Spielmodus (siehe MODES in config.js). Er haengt an der Welt und
+     * nicht an der Oberflaeche, damit ein geladener Stand mit denselben
+     * Regeln zurueckkommt, unter denen er gespielt wurde.
+     */
+    this.mode = null;
+    /** Volk, das der Spieler fuehrt (-1 = keines, Sandkasten). */
+    this.playerColonyId = -1;
     this.construction = new Construction(this);
+    /** Grabduft des Spielers, je Nest-Ebene (siehe digscent.js). */
+    this.digScent = new DigScent();
     this.stability = new Stability(this);
     this.combat = new Combat(this);
     this.diplomacy = new Diplomacy(this);
@@ -130,7 +142,7 @@ export class World {
     this.ctx = {
       world: this,
       portals: this.portals, levels: this.levels, colonies: this.colonies,
-      construction: this.construction, fields: this.fields,
+      construction: this.construction, fields: this.fields, digScent: this.digScent,
       stability: this.stability, combat: this.combat, diplomacy: this.diplomacy,
       structures: this.structures,
       food: this.food, brood: this.brood, ants: this.ants, creatures: this.creatures,
@@ -243,6 +255,7 @@ export class World {
       { colonyId: colony.id, name: 'Nest ' + colony.name }, this.genNest));
     this.ants.registerLevel(nest.id);
     this.creatures.registerLevel(nest.id);
+    this.digScent.registerLevel(nest);
     const layout = buildStartNest(nest, this.rngGen, this.genNest);
     colony.nestLevelIds.push(nest.id);
     colony.layout = layout;
@@ -862,6 +875,7 @@ export class World {
       createLevel: (ld) => {
         const lvl = new Level({
           kind: ld.kind, w: ld.w, h: ld.h, name: ld.name, colonyId: ld.colonyId,
+          depth: ld.depth,
         });
         lvl.setCellDefs(ld.kind === LEVEL_KIND.SURFACE ? SURFACE_CELL_DEFS : NEST_CELL_DEFS);
         return lvl;
@@ -878,8 +892,8 @@ export class World {
    * @returns {{ok:boolean, world?:World, reason?:string}}
    */
   static fromSave(data) {
-    if (!data || data.format !== 'formicarium-save') {
-      return { ok: false, reason: 'Keine Formicarium-Speicherdatei' };
+    if (!isSaveFile(data)) {
+      return { ok: false, reason: 'Keine Antarium-Speicherdatei' };
     }
     const w = new World(data.seed, data.preset);
     // Die Oberflaeche wird gebraucht, damit Pheromonsystem und Nahrung
@@ -978,6 +992,7 @@ export class World {
         this.combat.updateThreat(colony, this.ctx);
         this.combat.applyThreat(colony, this.ctx);
         this.combat.considerRaid(colony, this.ctx);
+        this.diplomacy.considerAid(colony, this.ctx);
       }
       // Befestigungen planen
       if ((this.tick + colony.id * 11) % FORTIFY.PLAN_INTERVAL === 0) {
@@ -990,8 +1005,11 @@ export class World {
         const nest = this.levels.get(lid);
         if (nest) this.construction.update(colony, nest, this.rngSim, this.tick);
       }
+      // Stockwerk tiefer, wenn die unterste Ebene voll ist
+      if ((this.tick + colony.id * 13) % DIG.EXPAND_INTERVAL === 0) this.expandNest(colony);
     }
     this.structures.update(this.ctx);
+    this.digScent.decay(this.tick);
     const t4 = now();
 
     // --- Distanzfelder ------------------------------------------------------
@@ -1000,7 +1018,7 @@ export class World {
       if (!colony.alive) continue;
       for (const lid of colony.nestLevelIds) {
         const fs = this.fields.get(lid);
-        if (fs) fs.update(colony, this.portals, this._budget);
+        if (fs) fs.update(colony, this.portals, this._budget, this.construction.peek(colony, lid));
       }
     }
     const t5 = now();
@@ -1032,12 +1050,14 @@ export class World {
     if (this.phero) this.phero.update(this.tick);
     // Wetter beeinflusst das Nachwachsen: Duerre stoppt es, Regen verdoppelt
     const weatherFactor = this.weather.drought > 0 ? 0 : (this.weather.rain > 0 ? 2 : 1);
-    this.food.update(this.levels.surface, this.tick, FOOD.REGROW_SCALE * weatherFactor);
+    this.food.update(this.levels.surface, this.tick, FOOD.REGROW_SCALE * weatherFactor,
+      this.ants.guarded);
     // Pflanzen wachsen nur bei Licht – nachts steht die Produktion still.
     // Pflanzen wachsen mit dem Licht: nachts langsam, tagsueber voll.
     // (Ganz abschalten war zu hart – das Oekosystem kippte im Test.)
     this.food.regrowVegetation(this.levels.surface, this.rngSim, this.tick, this.light);
     this.diplomacy.update(this.tick, this.rngSim);
+    this.diplomacy.shareFood(this.tick);
     updateInterventions(this);
     if (this.godMode === 'challenge' && this.energy < GODMODE.ENERGY_MAX) {
       this.energy = Math.min(GODMODE.ENERGY_MAX,
@@ -1062,7 +1082,112 @@ export class World {
   }
 
   /** Kolonie ausgestorben: Nest bleibt als verlassenes Nest bestehen. */
+  /**
+   * Ein STOCKWERK TIEFER: neue Nest-Ebene unter der bisher tiefsten, ueber
+   * einen Abstiegsschacht verbunden.
+   *
+   * Der Schacht ist ein ganz normales Portal, nur zwischen zwei Nest-Ebenen
+   * statt Oberflaeche und Nest. Damit gelten Kapazitaet, Uebergangszeit und
+   * die Engstelle im Kampf automatisch auch fuer ihn – ein zweiter
+   * Verbindungsmechanismus waere nur eine zweite Fehlerquelle gewesen.
+   *
+   * @returns {import('./levels.js').Level|null} die neue Ebene
+   */
+  expandNest(colony, force = false) {
+    if (!colony.alive) return null;
+    const own = colony.nestLevelIds
+      .map((id) => this.levels.get(id))
+      .filter((l) => l && !l.abandoned);
+    if (own.length === 0) return null;
+    if (own.length >= DIG.EXPAND_MAX_PER_COLONY) return null;
+    if (this.levels.nestCount >= LIMITS.MAX_NEST_LEVELS) return null;
+
+    // Tiefste eigene Ebene
+    let from = own[0];
+    for (const l of own) if (l.depth > from.depth) from = l;
+
+    if (!force) {
+      if (colony.starving) return null;
+      if (colony.total < DIG.EXPAND_MIN_POP) return null;
+      // Dem ganzen Volk muss der Platz ausgehen ...
+      if (!this.construction.needsSpace(colony)) return null;
+      // ... und die unterste Ebene muss vorher ordentlich ausgebaut sein.
+      if (from.airCount < DIG.EXPAND_LEVEL_MIN) return null;
+    }
+
+    // Schachtkopf: die tiefste Luftzelle, von der aus der Schacht senkrecht
+    // bis zum unteren Rand durchkommt. Fels ist nicht grabbar, deshalb
+    // werden mehrere Kandidaten von unten nach oben probiert.
+    const head = this._findShaftHead(from);
+    if (!head) return null;
+
+    const nest = this.levels.add(createNest(this.rngGen, {
+      colonyId: colony.id,
+      name: 'Nest ' + colony.name + ' -' + (from.depth + 1),
+      depth: from.depth + 1,
+    }, this.genNest));
+    this.ants.registerLevel(nest.id);
+    this.creatures.registerLevel(nest.id);
+    this.digScent.registerLevel(nest);
+    colony.nestLevelIds.push(nest.id);
+    this.fields.set(nest.id, new FieldSet(nest));
+
+    const landing = buildDeepLanding(nest, head.x, this.rngSim, this.genNest);
+
+    // Schacht in der oberen Ebene bis zur Muendung durchziehen
+    for (let y = head.y; y <= head.bottom; y++) {
+      from.set(head.x, y, NEST_CELL.TUNNEL);
+      from.setMeta(head.x, y, CHAMBER.NONE);
+    }
+    from.set(head.x, head.bottom, NEST_CELL.ENTRANCE);
+
+    const portal = this.portals.create({
+      colonyId: colony.id,
+      aLevelId: from.id, ax: head.x, ay: head.bottom,
+      bLevelId: nest.id, bx: landing.entrance.x, by: landing.entrance.y,
+      upLevelId: from.id,
+    });
+    colony.portalIds.push(portal.id);
+
+    const fsFrom = this.fields.get(from.id);
+    if (fsFrom) fsFrom.markAllDirty();
+
+    bus.logEvent(CAT.BAU, colony.name + ' oeffnet ein Stockwerk tiefer', {
+      tick: this.tick, levelId: nest.id, x: landing.entrance.x, y: landing.entrance.y,
+      colonyId: colony.id,
+    });
+    return nest;
+  }
+
+  /**
+   * Stelle fuer den Abstiegsschacht: senkrecht von einer Luftzelle bis kurz
+   * ueber den unteren Rand, ohne Fels im Weg.
+   */
+  _findShaftHead(level) {
+    const w = level.w, cells = level.cells, solid = level.solidTable;
+    const bottom = level.h - DIG.BOTTOM_MARGIN;
+    let best = null;
+    for (let y = bottom - 1; y > W.NEST_SURFACE_ROW + 4; y--) {
+      for (let x = 4; x < w - 4; x++) {
+        const i = y * w + x;
+        if (solid[cells[i]]) continue;
+        // Von hier senkrecht nach unten: kein Stein
+        let ok = true;
+        for (let yy = y; yy <= bottom; yy++) {
+          if (cells[yy * w + x] === NEST_CELL.STONE) { ok = false; break; }
+        }
+        if (!ok) continue;
+        best = { x, y: y + 1, bottom };
+        break;
+      }
+      if (best) break;
+    }
+    return best;
+  }
+
   extinguish(colony) {
+    // Ein totes Volk fuehrt keine Kriege mehr: raus aus den Kampfpaaren.
+    this.combat.forgetColony(colony.id);
     colony.alive = false;
     for (const lid of colony.nestLevelIds) {
       const lvl = this.levels.get(lid);

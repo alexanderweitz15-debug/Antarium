@@ -137,7 +137,7 @@ export class SettingsPanel {
     foot.appendChild(rb);
     const v = document.createElement('div');
     v.className = 'tool-hint';
-    v.textContent = 'Formicarium ' + VERSION;
+    v.textContent = 'Antarium ' + VERSION;
     foot.appendChild(v);
   }
 
@@ -156,9 +156,26 @@ export class SettingsPanel {
 // (privates Fenster, abgeschaltete Cookies) das Spiel nicht anhaelt.
 // ---------------------------------------------------------------------------
 
+/**
+ * Einen Schluessel lesen und dabei den alten Namen von vor der
+ * Umbenennung beruecksichtigen. Wer schon gespielt hat, soll seine
+ * Einstellungen und seinen Spielstand nicht verlieren.
+ */
+export function readStored(key, legacyKey) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw !== null) return raw;
+    const old = localStorage.getItem(legacyKey);
+    if (old === null) return null;
+    // Einmalig umziehen, danach wird nur noch der neue Schluessel benutzt.
+    try { localStorage.setItem(key, old); localStorage.removeItem(legacyKey); } catch { /* egal */ }
+    return old;
+  } catch { return null; }
+}
+
 function load() {
   try {
-    const raw = localStorage.getItem(STORAGE.SETTINGS);
+    const raw = readStored(STORAGE.SETTINGS, STORAGE.SETTINGS_LEGACY);
     return raw ? JSON.parse(raw) : {};
   } catch { return {}; }
 }
@@ -170,7 +187,7 @@ function save(values) {
 /** Kurzinfo zum abgelegten Stand (oder null). */
 export function savedInfo() {
   try {
-    const raw = localStorage.getItem(STORAGE.SAVE);
+    const raw = readStored(STORAGE.SAVE, STORAGE.SAVE_LEGACY);
     if (!raw) return null;
     const d = JSON.parse(raw);
     return {

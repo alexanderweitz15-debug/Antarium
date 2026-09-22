@@ -133,7 +133,7 @@ export class FoodSystem {
   }
 
   /** Nachwachsen und Verderben (alle FOOD.REGROW_INTERVAL Ticks). */
-  update(level, tick, regrowScale) {
+  update(level, tick, regrowScale, guarded) {
     if (tick % FOOD.REGROW_INTERVAL !== 0) return;
     const scale = regrowScale !== undefined ? regrowScale : FOOD.REGROW_SCALE;
     const r = this.reg.get(level.id);
@@ -147,7 +147,18 @@ export class FoodSystem {
       const prof = PROFILE[type];
       if (!prof) { r.flag[i] = 0; continue; }          // Zelle ist keine Quelle mehr
       let amt = meta[i];
-      if (prof.regrow > 0) amt += prof.regrow * scale;
+      /**
+       * Bewachte Blattlaeuse geben mehr. Ameisen und Blattlaeuse leben in
+       * Symbiose: betreute Tiere produzieren mehr Honigtau. Ohne diesen
+       * Ertrag waere eine Wache reiner Verlust – im Test kostete sie das
+       * Volk seinen ganzen Zuckervorrat, ohne etwas einzubringen.
+       */
+      let regrow = prof.regrow;
+      if (regrow > 0 && guarded && guarded.size && type === SURFACE_CELL.APHIDS
+          && guarded.has(i)) {
+        regrow *= FOOD.GUARD_REGROW;
+      }
+      if (regrow > 0) amt += regrow * scale;
       if (prof.decay > 0) amt -= prof.decay;
       if (amt > prof.max) amt = prof.max;
       if (amt < 0) amt = 0;

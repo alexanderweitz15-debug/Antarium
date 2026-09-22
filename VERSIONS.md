@@ -7,7 +7,8 @@ in dieser Umgebung aber nicht zum Server schieben.
 | Version | Commit | Stand |
 |---|---|---|
 | 1.0.0 | `b0433e6` | Alle zehn Phasen fertig. 24/24 headless, 36/36 Browser. Elf Kreaturenarten, 24 goettliche Eingriffe, Tag/Nacht, Speichern und Laden bitgenau. |
-| 1.1.0 | (dieser Commit) | Phase 11: 61 Eigenschaften, Diplomatie mit Kriegsduft, fuenf Materialien, sechs Bauwerke in drei Stufen, Forschungsbaum, Massentest. Speicherformat **Version 2** – Staende aus 1.0.0 werden abgelehnt, nicht falsch geladen. |
+| 1.1.0 | `b7ce794` | Phase 11: 61 Eigenschaften, Diplomatie mit Kriegsduft, fuenf Materialien, sechs Bauwerke in drei Stufen, Forschungsbaum, Massentest. Speicherformat **Version 2** – Staende aus 1.0.0 werden abgelehnt, nicht falsch geladen. |
+| 1.2.0 | (dieser Commit) | Blattlaus-Bewachung, Buendnisse mit Wirkung (Beistand und Nahrungsteilung), mehrere Stockwerke je Volk mit Abstiegsschacht. Grabzustand liegt jetzt je Ebene (`colony.digByLevel`) – Speicherformat bleibt Version 2, alte Staende laden weiter. 42/42 Pruefungen. |
 
 ## Zurueckrollen
 

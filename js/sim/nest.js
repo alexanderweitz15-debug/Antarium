@@ -11,7 +11,7 @@
  * herauslaeuft – die Oberflaeche erreicht man ausschliesslich ueber Portale.
  */
 
-import { WORLD, GEN } from '../config.js';
+import { WORLD, GEN, DIG } from '../config.js';
 import { Level, LEVEL_KIND } from './levels.js';
 import { fbm, hash2, hash2i } from '../rng.js';
 
@@ -92,20 +92,29 @@ export const CHAMBER_DEFS = [
  * @param {{colonyId:number, name:string}} opts
  */
 export function createNest(rng, opts, gen) {
+  const depth = opts.depth || 0;
   const level = new Level({
     kind: LEVEL_KIND.NEST,
     w: WORLD.NEST_W,
     h: WORLD.NEST_H,
     name: opts.name,
     colonyId: opts.colonyId,
+    depth,
   });
   level.setCellDefs(NEST_CELL_DEFS);
-  generateNestRock(level, rng, gen);
+  generateNestRock(level, rng, gen, depth);
   return level;
 }
 
-/** Erdreich, Steine, Wurzeln, Kiesel – deterministisch. */
-export function generateNestRock(level, rng, gen) {
+/**
+ * Erdreich, Steine, Wurzeln, Kiesel – deterministisch.
+ *
+ * Bei depth > 0 liegt die Ebene UNTER einer anderen. Dort gibt es keinen
+ * Himmel: die obersten Zeilen werden zum Deckgebirge. Sie bleiben ungrabbar
+ * (diggable() und carve() sperren alles bis WORLD.NEST_SURFACE_ROW) und
+ * bilden so die Decke zwischen den Stockwerken.
+ */
+export function generateNestRock(level, rng, gen, depth = 0) {
   const g = gen || GEN.NEST;
   const seedHard = rng.int(1 << 30);
   const seedStone = rng.int(1 << 30);
@@ -123,11 +132,15 @@ export function generateNestRock(level, rng, gen) {
   const { w, h, cells, variant } = level;
 
   for (let y = 0; y < h; y++) {
-    const depth = y - surfRow;
+    const rowDepth = y - surfRow;
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
       let t;
-      if (y < surfRow) {
+      if (depth > 0 && y <= surfRow) {
+        // Deckgebirge: harte Erde mit Steinlinsen, kein Himmel.
+        const st = fbm(x * g.STONE_FREQ, y * g.STONE_FREQ, seedStone, 3);
+        t = st > g.STONE_THRESHOLD ? NEST_CELL.STONE : NEST_CELL.HARD_SOIL;
+      } else if (y < surfRow) {
         t = NEST_CELL.SKY;
       } else if (y === surfRow) {
         t = NEST_CELL.TOPSOIL;
@@ -140,11 +153,14 @@ export function generateNestRock(level, rng, gen) {
         } else {
           // Harte Erde nimmt mit der Tiefe zu
           const hard = fbm(x * g.HARD_SOIL_FREQ, y * g.HARD_SOIL_FREQ, seedHard, 3);
-          const depthBias = Math.min(1, Math.max(0, (depth - g.HARD_SOIL_START) / 60));
+          // Jedes Stockwerk setzt die Tiefe fort, sonst waere die zweite
+          // Ebene weicher als das Ende der ersten.
+          const absDepth = rowDepth + (level.h - surfRow) * (level.depth || 0);
+          const depthBias = Math.min(1, Math.max(0, (absDepth - g.HARD_SOIL_START) / 60));
           if (hard + depthBias > 0.45) t = NEST_CELL.HARD_SOIL;
           const r = hash2(x, y, seedScatter);
           if (r < g.PEBBLE_DENSITY) t = NEST_CELL.PEBBLE;
-          else if (depth < 26 && r < g.PEBBLE_DENSITY + g.ROOT_DENSITY) t = NEST_CELL.ROOT;
+          else if (absDepth < 26 && r < g.PEBBLE_DENSITY + g.ROOT_DENSITY) t = NEST_CELL.ROOT;
         }
       }
       cells[i] = t;
@@ -229,6 +245,40 @@ export function buildStartNest(level, rng, gen) {
     store: { x: storeX, y: storeY + 1 },
     dugCells: dug,
   };
+}
+
+/**
+ * Landeplatz einer neu ausgehobenen Tiefebene: Schachtmuendung in der
+ * Deckenzeile, ein kurzer Schacht nach unten und eine Kammer am Fuss.
+ * Ohne diese Kammer stehen die ersten Ameisen in einem Sackgassen-Schacht
+ * und laufen sofort wieder hinauf.
+ * @returns {{entrance:{x:number,y:number}, chamber:{x:number,y:number}}}
+ */
+export function buildDeepLanding(level, mx, rng, gen) {
+  const g = gen || GEN.NEST;
+  const surfRow = WORLD.NEST_SURFACE_ROW;
+  const x = Math.max(8, Math.min(level.w - 9, mx | 0));
+
+  // Die Muendung liegt IN der Deckenzeile – dieselbe Rolle wie ein Eingang
+  // an der Oberflaeche, deshalb auch derselbe Zelltyp (Renderer, Marker).
+  level.set(x, surfRow, NEST_CELL.ENTRANCE);
+  level.setMeta(x, surfRow, CHAMBER.NONE);
+
+  const bottom = surfRow + DIG.EXPAND_LANDING_DEPTH;
+  carveShaft(level, x, surfRow + 1, bottom, g.START_SHAFT_W);
+
+  const cy = bottom + g.START_QUEEN_RY + 1;
+  carveChamber(level, x, cy, g.START_QUEEN_RX, g.START_QUEEN_RY, CHAMBER.STORE);
+
+  // Ein Seitengang, damit das Volk sofort etwas zum Weitergraben hat.
+  const dir = rng.chance(0.5) ? -1 : 1;
+  const bx = x + dir * (g.START_QUEEN_RX + 6);
+  carveTunnel(level, x, bx, bottom - 3, 2);
+  carveChamber(level, bx, bottom - 2, g.START_STORE_RX, g.START_STORE_RY, CHAMBER.BROOD);
+
+  level.airCount = countAir(level);
+  level.markAllDirty();
+  return { entrance: { x, y: surfRow }, chamber: { x, y: cy } };
 }
 
 function countAir(level) {

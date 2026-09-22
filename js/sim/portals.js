@@ -3,8 +3,14 @@
  *
  * Ein Portal ist ein PAAR aus einer Oberflaechenzelle (Seite A) und einer
  * Zelle in der Oberflaechenzeile einer Nest-Ebene (Seite B). Es ist die
- * EINZIGE Verbindung zwischen Ebenen – unterirdische Verbindungen zwischen
- * Nestern gibt es nicht.
+ * EINZIGE Verbindung zwischen Ebenen – zwischen den Nestern VERSCHIEDENER
+ * Voelker gibt es keine unterirdische Verbindung.
+ *
+ * Seit Phase 11 verbindet ein Portal auch zwei Nest-Ebenen DESSELBEN Volkes
+ * (der Abstiegsschacht, siehe World.expandNest). Damit eine Ameise auf einer
+ * mittleren Ebene den Weg nach draussen findet und nicht in den Schacht
+ * nach unten laeuft, merkt sich jedes Portal in upLevelId, welche seiner
+ * beiden Seiten die obere ist.
  *
  * Eigenschaften:
  *  - Kapazitaet pro Tick und Richtung (Engstelle, ab Phase 5 Schlachtpunkt)
@@ -27,6 +33,8 @@ export class Portal {
     this.bLevelId = opts.bLevelId;
     this.bx = opts.bx;
     this.by = opts.by;
+    /** Ebene der oberen Seite. Bei Eingaengen ist das die Oberflaeche. */
+    this.upLevelId = opts.upLevelId !== undefined ? opts.upLevelId : opts.aLevelId;
 
     /** Von der Kolonie verschlossen (Nacht, Bedrohung). */
     this.closed = false;
@@ -70,7 +78,7 @@ export class PortalSystem {
 
   /**
    * Neues Portalpaar anlegen.
-   * @param {{colonyId:number, aLevelId:number, ax:number, ay:number, bLevelId:number, bx:number, by:number}} opts
+   * @param {{colonyId:number, aLevelId:number, ax:number, ay:number, bLevelId:number, bx:number, by:number, upLevelId?:number}} opts
    */
   create(opts) {
     const p = new Portal(opts);
@@ -126,12 +134,31 @@ export class PortalSystem {
    * Ohne diese Sperre laufen Sammlerinnen versehentlich in Nachbarnester,
    * nehmen dort Aufgaben an und fehlen dem eigenen Volk.
    */
-  canEnter(portal, fromLevelId, colonyId, raider = false) {
+  /**
+   * Darf diese Einheit durch? Eigene immer, Raeuberinnen als Ausnahme –
+   * und seit Phase 12 auch Verbuendete: wer zu Hilfe kommt, muss durch die
+   * Tuer passen.
+   * @param {boolean} ally true, wenn das Volk mit dem Besitzer verbuendet ist
+   */
+  canEnter(portal, fromLevelId, colonyId, raider = false, ally = false) {
     const own = portal.colonyId === colonyId;
-    if (!own && !raider) return false;
-    if ((portal.closed || portal.pluggedBy >= 0) && !own) return false;
-    if (fromLevelId === portal.aLevelId) return portal.usedAB < portal.capacity;
-    return portal.usedBA < portal.capacity;
+    if (!own && !raider && !ally) return false;
+    /**
+     * Eine verstopfte Passage bleibt dicht: dort steckt eine Panzerameise,
+     * und die kann man umbringen – dagegen gibt es ein Mittel. Ein bloss
+     * geschlossenes Tor dagegen laesst sich aufbrechen, sonst waere
+     * Zumachen eine Siegbedingung (siehe PORTALS.FORCED_CAPACITY).
+     */
+    if (portal.pluggedBy >= 0 && !own && !ally) return false;
+    const forcing = portal.closed && !own && !ally;
+    const cap = forcing ? PORTALS.FORCED_CAPACITY : portal.capacity;
+    if (fromLevelId === portal.aLevelId) return portal.usedAB < cap;
+    return portal.usedBA < cap;
+  }
+
+  /** Bricht diese Einheit gerade ein verschlossenes Tor auf? */
+  isForcing(portal, colonyId, ally = false) {
+    return portal.closed && portal.colonyId !== colonyId && !ally;
   }
 
   /** Durchlass verbuchen. */

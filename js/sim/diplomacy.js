@@ -28,6 +28,8 @@
 
 import { DIPLO } from '../config.js';
 import { queenHas } from './traits.js';
+import { CASTE } from './castes.js';
+import { ANT_STATE } from './ants.js';
 import { bus, CAT } from './events.js';
 
 export const STANCE = { WAR: 0, HOSTILE: 1, PEACE: 2, ALLIED: 3 };
@@ -269,6 +271,102 @@ export class Diplomacy {
   /** Abstand zwischen zwei Wellen – auf Kriegspfad deutlich kuerzer. */
   raidInterval(colony, base) {
     return this.onWarpath(colony) ? Math.round(base * DIPLO.WARPATH_SPEEDUP) : base;
+  }
+
+  // -------------------------------------------------------------------------
+  // Beistand
+  // -------------------------------------------------------------------------
+
+  /**
+   * Braucht ein Verbuendeter Hilfe – und schickt dieses Volk welche?
+   *
+   * Ein Buendnis, das nur "wir greifen uns nicht an" bedeutet, ist keines.
+   * Steht ein Verbuendeter unter Druck, ruecken Kaempferinnen aus, laufen
+   * zu seinem Eingang und gehen hinein. Gekaempft wird dort ueber die
+   * normale Nahkampfregel – der Angreifer ist weder das eigene Volk noch
+   * ein Verbuendeter, also ein Feind.
+   */
+  considerAid(colony, ctx) {
+    const world = this.world;
+    if (world.tick - (colony.lastAidTick || -1e9) < DIPLO.AID_INTERVAL) return false;
+    if ((colony.threat || 0) >= 2) return false;          // erst das eigene Haus
+    if (colony.total < DIPLO.AID_MIN_POP) return false;
+
+    let friend = null;
+    for (const other of world.colonies.colonies) {
+      if (!other.alive || other.id === colony.id) continue;
+      if (!this.allied(colony.id, other.id)) continue;
+      if ((other.threat || 0) < DIPLO.AID_THREAT) continue;
+      if (!friend || other.threat > friend.threat) friend = other;
+    }
+    if (!friend) return false;
+
+    /**
+     * NUR KAEMPFERINNEN. Der erste Anlauf zog auch Arbeiterinnen ein und
+     * schickte alle fuenfzig Sekunden achtzehn Prozent des Volkes los. Das
+     * Ergebnis war ein Fleischwolf: der Helfer fiel von 330 auf 189, der
+     * Beschuetzte von 122 auf 53 – schlechter als ganz ohne Buendnis.
+     * Jetzt gehen ausschliesslich Soldatinnen, und nur wenn genug davon
+     * zu Hause bleiben.
+     */
+    const soldiers = colony.population[CASTE.SOLDIER]
+      + colony.population[CASTE.ARMOR] + colony.population[CASTE.TITAN];
+    if (soldiers < DIPLO.AID_MIN_SOLDIERS) return false;
+
+    const portal = world.portals.ofColony(friend.id)[0];
+    if (!portal) return false;
+    const ants = ctx.ants;
+    const want = Math.max(4, Math.round(soldiers * DIPLO.AID_SHARE));
+    let sent = 0;
+    for (let i = 0; i < ants.high && sent < want; i++) {
+      if (!ants.alive[i] || ants.colony[i] !== colony.id) continue;
+      if (ants.level[i] !== world.levels.surface.id) continue;
+      const caste = ants.caste[i];
+      const fighter = caste === CASTE.SOLDIER || caste === CASTE.ARMOR || caste === CASTE.TITAN;
+      if (!fighter) continue;
+      const st = ants.state[i];
+      if (st === ANT_STATE.RAID || st === ANT_STATE.LOOT || st === ANT_STATE.AID) continue;
+      ants.state[i] = ANT_STATE.AID;
+      ants.targetX[i] = portal.ax;
+      ants.targetY[i] = portal.ay;
+      ants.timer[i] = DIPLO.AID_TIMEOUT;
+      sent++;
+    }
+    if (sent < 4) return false;
+    colony.lastAidTick = world.tick;
+    colony.aided = (colony.aided || 0) + 1;
+    bus.logEvent(CAT.KAMPF, colony.name + ' schickt ' + sent
+      + ' Kaempferinnen zur Hilfe nach ' + friend.name, {
+      tick: world.tick, levelId: world.levels.surface.id,
+      x: portal.ax, y: portal.ay, colonyId: colony.id,
+    });
+    return true;
+  }
+
+  /**
+   * Nahrungshilfe unter Verbuendeten. Ein Volk mit vollem Lager laesst
+   * einem hungernden Verbuendeten etwas zukommen – aber nur einen
+   * Bruchteil und nur, solange es selbst im Ueberfluss lebt.
+   */
+  shareFood(tick) {
+    if (tick % DIPLO.SHARE_INTERVAL !== 0) return;
+    const colonies = this.world.colonies.colonies;
+    for (const giver of colonies) {
+      if (!giver.alive || !giver.storeArr) continue;
+      for (const taker of colonies) {
+        if (!taker.alive || taker.id === giver.id || !taker.storeArr) continue;
+        if (!this.allied(giver.id, taker.id)) continue;
+        if (!taker.starving) continue;
+        for (let n = 0; n < 3; n++) {
+          const spare = giver.storeArr[n] - giver.capacity[n] * DIPLO.SHARE_KEEP;
+          if (spare <= 0) continue;
+          const give = Math.min(spare, giver.capacity[n] * DIPLO.SHARE_RATE);
+          giver.storeArr[n] -= give;
+          taker.storeArr[n] = Math.min(taker.capacity[n], taker.storeArr[n] + give);
+          taker.intakeAcc[n] += give;
+        }
+      }
+    }
   }
 
   // -------------------------------------------------------------------------

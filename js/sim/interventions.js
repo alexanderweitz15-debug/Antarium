@@ -12,7 +12,7 @@
  * die Nester hinein.
  */
 
-import { GODMODE, SIM } from '../config.js';
+import { GODMODE, SIM, DIGSCENT } from '../config.js';
 import { LEVEL_KIND } from './levels.js';
 import { SURFACE_CELL } from './surface.js';
 import { NEST_CELL, CHAMBER } from './nest.js';
@@ -20,6 +20,7 @@ import { CASTE } from './castes.js';
 import { FX } from './fx.js';
 import { PH } from './pheromones.js';
 import { broodSpot } from './brood.js';
+import { diggable } from './construction.js';
 
 import { SPECIES_LIST } from './creatures.js';
 import { bus, CAT } from './events.js';
@@ -590,6 +591,56 @@ export const INTERVENTIONS = [
         if (fs) fs.markAllDirty();
       }
       log(world, CAT.BAU, n + ' Zellen verstaerkt', level.id, x, y);
+      return n;
+    },
+  },
+  {
+    key: 'digscent', name: 'Grabduft', cost: 6, where: 'nest', icon: 'glyph:\u2237',
+    desc: 'Malt einen Grabbefehl ins Erdreich. Die Ameisen graben dem Strich nach,'
+      + ' und je staerker er aufgetragen ist, desto mehr von ihnen kommen. Der Duft'
+      + ' verdunstet – ein Befehl, den man nicht erneuert, verfaellt.',
+    /**
+     * Anders als "Bauauftrag" wird hier GEMALT statt geklickt: der Pinsel
+     * legt Duft ab, und die Grabplanung sucht sich daraus jeden Tick die
+     * staerkste erreichbare Zelle (construction._applyScent). Deshalb muss
+     * der Spieler keine Reihenfolge angeben – der Gang frisst sich von
+     * selbst in den bemalten Streifen hinein.
+     */
+    apply(world, level, x, y, o) {
+      if (level.kind !== LEVEL_KIND.NEST) return 0;
+      const scent = world.digScent;
+      if (!scent) return 0;
+      let n = 0;
+      const r = Math.max(1, Math.round(o.radius * 0.5));
+      const amount = DIGSCENT.DEPOSIT * o.power;
+      for (let cy = y - r; cy <= y + r; cy++) {
+        for (let cx = x - r; cx <= x + r; cx++) {
+          const dx = cx - x, dy = cy - y;
+          if (dx * dx + dy * dy > r * r) continue;
+          if (!diggable(level, cx, cy)) continue;
+          if (scent.deposit(level, cx, cy, amount)) n++;
+        }
+      }
+      return n;
+    },
+  },
+  {
+    key: 'clearscent', name: 'Grabduft loeschen', cost: 2, where: 'nest', icon: 'glyph:\u2205',
+    desc: 'Nimmt den Grabbefehl im Umkreis wieder zurueck.',
+    apply(world, level, x, y, o) {
+      const scent = world.digScent;
+      if (!scent || level.kind !== LEVEL_KIND.NEST) return 0;
+      let n = 0;
+      const r = Math.max(1, Math.round(o.radius * 0.6));
+      for (let cy = y - r; cy <= y + r; cy++) {
+        for (let cx = x - r; cx <= x + r; cx++) {
+          const dx = cx - x, dy = cy - y;
+          if (dx * dx + dy * dy > r * r) continue;
+          if (!level.inBounds(cx, cy)) continue;
+          const i = cy * level.w + cx;
+          if (scent.at(level.id, i) > 0) { scent.clear(level.id, i); n++; }
+        }
+      }
       return n;
     },
   },

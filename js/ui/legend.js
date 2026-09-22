@@ -63,7 +63,7 @@ export class Legend {
     const sig = [
       level.id, onlyVisible ? 1 : 0,
       present ? [...present].sort().join(',') : 'all',
-      world.colonies.colonies.map((c) => c.id + c.name + c.total).join(','),
+      world.colonies.colonies.map((c) => c.id + c.name + c.total + (c.alive ? 'L' : 'T')).join(','),
       [...castes].sort().join(','),
       [...world.creatureCensus].join(','),
       // Phase 11: neue Abschnitte muessen auftauchen, sobald es sie gibt
@@ -119,11 +119,13 @@ export class Legend {
     }
 
     // --- Kolonien ---------------------------------------------------------
-    frag.appendChild(this._category('Kolonien', world.colonies.colonies.map((c) => ({
-      color: c.colorCss,
-      name: c.name,
-      desc: c.total + ' Ameisen, ' + c.nestLevelIds.length + ' Nest-Ebene(n)',
-    }))));
+    // Nur lebende Voelker: eine Legende erklaert, was man SIEHT.
+    frag.appendChild(this._category('Kolonien',
+      world.colonies.colonies.filter((c) => c.alive).map((c) => ({
+        color: c.colorCss,
+        name: c.name,
+        desc: c.total + ' Ameisen, ' + c.nestLevelIds.length + ' Nest-Ebene(n)',
+      }))));
 
     // --- Brut (nur im Nest) -----------------------------------------------
     if (!isSurface) {

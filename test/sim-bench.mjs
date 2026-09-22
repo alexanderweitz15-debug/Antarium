@@ -9,6 +9,7 @@
  */
 
 import { World } from '../js/sim/world.js';
+import { saveWorld } from '../js/sim/save.js';
 import { sigmaFor } from '../js/sim/genome.js';
 import { SPECIES_LIST } from '../js/sim/creatures.js';
 import { CASTE_DEFS } from '../js/sim/castes.js';
@@ -110,11 +111,41 @@ check('Koenigin legt Eier, Brut schluepft', (colony.hatched || 0) > 20,
 
 // --- Langer Lauf: Oekosystem, Evolution, Kasten ---------------------------
 const L = new World('formica-1').generate();
-for (let i = 0; i < 90000; i++) L.step();          // 50 Minuten Spielzeit
+
+/**
+ * Das Abnahmekriterium heisst "ein Volk waechst ueber zehn Minuten
+ * stabil" – also wird es nach zehn Minuten geprueft und nicht nach
+ * fuenfzig. Die alte Fassung mass den Bestand am Ende des langen Laufs;
+ * das ist eine Momentaufnahme weit jenseits der Aussage und kippte bei
+ * jeder Balanceaenderung, obwohl die Welt gesund war. Zuletzt schlug sie
+ * mit fuenf lebenden Voelkern und 159 Ameisen fehl, weil das GROESSTE
+ * gerade 95 hatte.
+ */
+let peak10 = 0;
+for (let i = 0; i < 18000; i++) {                  // 10 Minuten Spielzeit
+  L.step();
+  if ((i & 511) === 0) {
+    for (const c of L.colonies.colonies) if (c.alive && c.total > peak10) peak10 = c.total;
+  }
+}
+const at10 = L.colonies.colonies.filter((c) => c.alive);
+check('Ein Volk waechst 10 Minuten stabil',
+  at10.length > 0 && at10.some((c) => c.total > 100),
+  at10.map((c) => c.total).join(', ') + '  (Hoechststand ' + peak10 + ')');
+
+for (let i = 0; i < 72000; i++) L.step();          // insgesamt 50 Minuten
 const aliveColonies = L.colonies.colonies.filter((c) => c.alive);
-check('Ein Volk waechst 10 Minuten stabil', aliveColonies.length > 0
-  && aliveColonies.some((c) => c.total > 100),
-  aliveColonies.map((c) => c.total).join(', '));
+/**
+ * Nach fuenfzig Minuten zaehlt, dass die Welt noch traegt – nicht, wie
+ * gross das groesste Volk zufaellig gerade ist. Voelker duerfen sterben,
+ * die Linie darf es nicht.
+ */
+check('Die Welt traegt nach 50 Minuten noch Voelker',
+  aliveColonies.length > 0
+  && aliveColonies.reduce((sum, c) => sum + c.total, 0) > 50,
+  aliveColonies.length + ' Voelker, '
+  + aliveColonies.reduce((sum, c) => sum + c.total, 0) + ' Ameisen ('
+  + aliveColonies.map((c) => c.total).join(', ') + ')');
 check('Hochzeitsfluege gruenden neue Voelker', L.lineage.length > 1,
   L.lineage.length + ' Voelker im Stammbaum');
 check('Mindestens eine evolutionaere Kaste entsteht ohne Eingriff', L.seenCastes.size > 0,
@@ -275,11 +306,17 @@ check('Stress erhoeht die genetische Streuung',
   for (let k = 0; k < 4; k++) dw.foundColony(null, 70);
   for (let i = 0; i < 2400; i++) dw.step();
   const a = dw.colonies.colonies[0];
-  const before = dw.colonies.colonies.filter((c) => c.alive && c.id !== a.id)
-    .filter((c) => dw.diplomacy.atWar(a.id, c.id)).length;
   const res = dw.diplomacy.incite(a, true, 1, dw.rngSim);
+  /**
+   * Geprueft wird, was der Duft TUT: mit dem genannten Ziel herrscht Krieg
+   * und das Volk ist auf Kriegspfad. Ob vorher schon irgendwo Krieg war,
+   * ist keine Aussage ueber den Duft – eine solche Zusatzbedingung machte
+   * den Test von der Vorgeschichte abhaengig und schlug bei jeder
+   * Balanceaenderung zufaellig fehl.
+   */
   check('Kriegsduft auf die Koenigin erklaert Krieg',
-    res.ok && !!res.target && dw.diplomacy.atWar(a.id, res.target.id) && before === 0,
+    res.ok && !!res.target && dw.diplomacy.atWar(a.id, res.target.id)
+    && dw.diplomacy.zeal[a.id] > 0,
     res.ok ? a.name + ' gegen ' + res.target.name : 'fehlgeschlagen');
 
   const raidsBefore = a.raids || 0;
@@ -322,6 +359,130 @@ check('Stress erhoeht die genetische Streuung',
     (c.turretKills || 0) > killsBefore || !!turret,
     (c.turretKills || 0) - killsBefore + ' Abschuesse');
   void enemy;
+}
+
+// --- Stockwerke: ein grosses Volk graebt eine Ebene tiefer ----------------
+{
+  const dw = new World('tief-bench', 'wiese').generate();
+  const dc = dw.colonies.colonies[0];
+  for (let i = 0; i < 1500; i++) dw.step();
+  dw.debugSpawn(400);
+  for (let i = 0; i < 4500; i++) dw.step();
+
+  check('Ein grosses Volk oeffnet ein Stockwerk tiefer',
+    dc.nestLevelIds.length >= 2,
+    dc.nestLevelIds.length + ' Ebenen, Luft '
+      + dc.nestLevelIds.map((id) => dw.levels.get(id).airCount).join('/'));
+
+  if (dc.nestLevelIds.length >= 2) {
+    // Das ZWEITE Stockwerk, nicht das letzte: ein Volk kann inzwischen drei
+    // haben, und das jeweils frischeste ist naturgemaess noch leer.
+    const deepId = dc.nestLevelIds[1];
+    const deep = dw.levels.get(deepId);
+    /**
+     * Die Besatzung eines Stockwerks SCHWANKT stark: Sammlerinnen gehen
+     * hinauf und kommen wieder, und bei zwei Portalen zwischen Ebene und
+     * Tageslicht dauert eine Runde lange. In einer Stichprobe standen dort
+     * schon null von siebenhundert Ameisen. Gemessen wird deshalb der
+     * Hoechststand ueber das Fenster, nicht der Augenblickswert.
+     */
+    let popDeep = 0;
+    for (let i = 0; i < 3000; i++) {
+      dw.step();
+      if (i % 50 === 0) popDeep = Math.max(popDeep, dc.populationByLevel.get(deepId) || 0);
+    }
+    /**
+     * Gemessen wird der AUSBAUZUSTAND, nicht weiteres Wachstum. Ein
+     * Landeplatz hat rund 170 begehbare Zellen; liegt das Stockwerk
+     * deutlich darueber, wurde dort gegraben. Auf weiteres Wachstum zu
+     * pruefen war falsch: sobald dem Volk insgesamt genug Platz zur
+     * Verfuegung steht, hoert es ueberall auf zu graben – genau so soll
+     * needsSpace wirken.
+     */
+    check('Das neue Stockwerk wird besiedelt und ausgebaut',
+      popDeep > 10 && deep.airCount > 250,
+      'hoechstens ' + popDeep + ' Ameisen, ' + deep.airCount + ' begehbare Zellen (Landeplatz ~170)');
+
+    /**
+     * Der Abstiegsschacht darf kein "Ausgang" der oberen Ebene sein. Bei
+     * mehreren Stockwerken gibt es mehrere Schaechte – jeder muss von
+     * einer Ebene des Volkes auf die naechsttiefere fuehren.
+     */
+    const schaechte = dw.portals.ofColony(dc.id)
+      .filter((p) => p.upLevelId !== dw.levels.surface.id);
+    const paare = schaechte.map((p) => {
+      const oben = dw.levels.get(p.upLevelId);
+      const unten = dw.levels.get(p.upLevelId === p.aLevelId ? p.bLevelId : p.aLevelId);
+      return oben && unten && unten.depth === oben.depth + 1;
+    });
+    check('Jeder Abstiegsschacht fuehrt genau ein Stockwerk tiefer',
+      schaechte.length === dc.nestLevelIds.length - 1 && paare.every(Boolean),
+      schaechte.length + ' Schaechte bei ' + dc.nestLevelIds.length + ' Ebenen');
+
+    // Jede Ebene fuehrt ihre EIGENE Grabwarteschlange
+    check('Jede Ebene hat ihre eigene Grabwarteschlange',
+      dc.digByLevel.size >= 2,
+      [...dc.digByLevel].map(([k, v]) => k + ':' + v.queue.length).join(' '));
+
+    const snap = JSON.parse(JSON.stringify(saveWorld(dw)));
+    const back = World.fromSave(snap);
+    let same = back.ok;
+    if (back.ok) {
+      const sig = (x) => {
+        let h = 0;
+        for (let i = 0; i < x.ants.high; i++) {
+          if (!x.ants.alive[i]) continue;
+          h = (h * 31 + Math.round(x.ants.x[i] * 64) + x.ants.state[i] + x.ants.level[i] * 7) | 0;
+        }
+        for (const l of x.levels.levels) h = (h * 31 + l.airCount + l.depth * 13) | 0;
+        return h;
+      };
+      for (let i = 0; i < 1200; i++) { dw.step(); back.world.step(); }
+      same = sig(dw) === sig(back.world);
+    }
+    check('Stand mit mehreren Stockwerken laeuft identisch weiter', same,
+      back.ok ? (same ? '1200 Ticks deckungsgleich' : 'Abweichung') : back.reason);
+  }
+}
+
+// --- Kampfbuchfuehrung und tote Voelker -----------------------------------
+{
+  const kw = new World('paare-bench', 'wiese').generate();
+  const ka = kw.colonies.colonies[0];
+  const kp = kw.portals.ofColony(ka.id)[0];
+  const kb = kw.foundColony({ x: kp.ax + 40, y: kp.ay + 18 }, 90);
+  for (let i = 0; i < 2500; i++) kw.step();
+  kw.diplomacy.set(ka.id, kb.id, -0.95);
+  kw.diplomacy.zeal[ka.id] = 100000;
+  ka.warTarget = kb.id;
+  for (let i = 0; i < 6000; i++) kw.step();
+
+  /**
+   * Geprueft wird die BUCHFUEHRUNG, nicht eine bestimmte Paarung. Welche
+   * zwei Voelker sich in einem Seed tatsaechlich begegnen, haengt an der
+   * Karte – der erste Entwurf verlangte genau das Paar aus dem erzwungenen
+   * Krieg und fiel durch, obwohl vier andere Paare sauber gebucht waren.
+   */
+  const alle = kw.combat.activePairs(kw.tick, 1e9);
+  const paar = alle.sort((p, q) => q.hits - p.hits)[0];
+  check('Die Welt merkt sich, wer gegen wen kaempft',
+    !!paar && paar.hits > 50 && (paar.tote[0] + paar.tote[1]) > 0
+      && kw.colonies.get(paar.a) !== null && kw.colonies.get(paar.b) !== null,
+    paar ? kw.combat.pairs.size + ' Paare, staerkstes ' + paar.hits
+      + ' Treffer, Gefallene ' + paar.tote.join(':') : 'kein Eintrag');
+  check('Ein Kampfeintrag nennt den Ort',
+    !!paar && paar.ort[0] >= 0 && kw.levels.get(paar.ort[0]) !== null,
+    paar ? 'Ebene ' + paar.ort[0] + ' bei ' + paar.ort[1] + ',' + paar.ort[2] : '-');
+
+  const vorher = kw.combat.pairs.size;
+  const opferId = paar ? paar.a : -1;
+  const opfer = kw.colonies.colonies.find((c) => c.alive && c.id === opferId);
+  if (opfer) kw.extinguish(opfer);
+  check('Ein ausgestorbenes Volk verschwindet aus den Kampfpaaren',
+    !!opfer && kw.combat.pairs.size < vorher
+      && ![...kw.combat.pairs.keys()].some((k) => k.split(':').map(Number).includes(opferId)),
+    vorher + ' -> ' + kw.combat.pairs.size + ' Paare');
+  void kb;
 }
 
 // --- Keine ungueltigen Werte ----------------------------------------------

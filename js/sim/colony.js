@@ -61,6 +61,17 @@ export class Colony {
     this.foragers = 0;
     /** Ameisen, die gerade an einem Bauwerk arbeiten. */
     this.builders = 0;
+    /** Ameisen, die gerade Blattlaeuse bewachen. */
+    this.guards = 0;
+    /**
+     * Graeberinnen JE EBENE. Der Gesamtwert allein reicht nicht mehr,
+     * seit ein Volk mehrere Stockwerke haben kann: die Ameisen, die gerade
+     * zum Abstiegsschacht laufen, zaehlen als Graeberinnen und haben die
+     * gemeinsame Obergrenze ausgeschoepft – auf dem neuen Stockwerk
+     * standen daraufhin neununddreissig Ameisen und gruben nicht.
+     * @type {Map<number, number>}
+     */
+    this.diggersByLevel = new Map();
   }
 
   get name() { return this.baseName + ' ' + roman(this.generation); }
@@ -75,13 +86,17 @@ export class Colony {
     this.nurses = 0;
     this.foragers = 0;
     this.builders = 0;
+    this.guards = 0;
+    this.diggersByLevel.clear();
   }
 
   countAnt(casteId, levelId, state) {
     this.population[casteId]++;
     this.total++;
-    if (state === ANT_STATE.DIG) this.diggers++;
-    else if (state === ANT_STATE.NURSE) this.nurses++;
+    if (state === ANT_STATE.DIG) {
+      this.diggers++;
+      this.diggersByLevel.set(levelId, (this.diggersByLevel.get(levelId) || 0) + 1);
+    } else if (state === ANT_STATE.NURSE) this.nurses++;
     else if (state === ANT_STATE.EXPLORE || state === ANT_STATE.RETURN) this.foragers++;
     this.knownCastes.add(casteId);
     this.populationByLevel.set(levelId, (this.populationByLevel.get(levelId) || 0) + 1);

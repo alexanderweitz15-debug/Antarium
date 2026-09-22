@@ -497,6 +497,18 @@ export class Creatures {
    * Blueten verschwinden nur unter echten Blattfressern (sp.mows).
    */
   _graze(i, level, x, y, cell, ctx) {
+    /**
+     * Bewachte Blattlaeuse bleiben verschont. Das ist der Gegenspieler zum
+     * Marienkaefer: eine Kolonie, die ihre Zuckerquelle bewacht, behaelt
+     * sie auch. Geprueft wird ueber den Raumindex, nicht ueber alle Tiere.
+     */
+    if (cell === SURFACE_CELL.APHIDS && ctx.ants) {
+      let guarded = 0;
+      level.spatial.query(x + 0.5, y + 0.5, CREATURES.GUARD_SCARE, (id) => {
+        if (ctx.ants.alive[id] && ctx.ants.state[id] === ANT_STATE.GUARD) guarded++;
+      });
+      if (guarded > 0) return;
+    }
     if (cell === SURFACE_CELL.PLANT || cell === SURFACE_CELL.FLOWER) {
       // Nur echte Blattfresser raeumen Gruen ab. Wer daran nur nascht
       // (Marienkaefer an Pollen, Wespe an Nektar), laesst die Pflanze stehen.

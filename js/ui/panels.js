@@ -36,7 +36,16 @@ export class ColonyPanel {
     this.signature = sig;
 
     const frag = document.createDocumentFragment();
+    /**
+     * AUSGESTORBENE VOELKER GEHOEREN NICHT IN EINE LEBENDLISTE. Sie standen
+     * mit "(tot)" und null Ameisen weiter zwischen den anderen und machten
+     * die Uebersicht mit jeder Generation unbrauchbarer. Ihre Geschichte
+     * bleibt in der Ahnentafel und in den Statistiken; hier steht nur noch
+     * ihre Zahl.
+     */
+    const tot = this.world.colonies.colonies.filter((c) => !c.alive);
     for (const c of this.world.colonies.colonies) {
+      if (!c.alive) continue;
       const box = document.createElement('div');
       box.className = 'colony';
 
@@ -239,8 +248,16 @@ export class ColonyPanel {
       box.appendChild(bars);
       frag.appendChild(box);
     }
-    this.el.textContent = '';
-    this.el.appendChild(frag);
+    if (tot.length) {
+      const line = document.createElement('div');
+      line.className = 'colony extinct-note';
+      line.title = tot.map((c) => c.name).join(', ');
+      line.textContent = tot.length === 1
+        ? '1 Volk ausgestorben'
+        : tot.length + ' Voelker ausgestorben';
+      frag.appendChild(line);
+    }
+    this.el.replaceChildren(frag);
   }
 }
 

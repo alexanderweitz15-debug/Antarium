@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Formicarium – Insekten-Oekosystem</title>
+<title>Antarium – Insekten-Oekosystem</title>
 <!-- Eingebettetes Symbol: spart eine 404-Anfrage nach favicon.ico. -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230b0d0c'/%3E%3Cg fill='%23d9483b'%3E%3Ccircle cx='8' cy='3.6' r='2'/%3E%3Ccircle cx='8' cy='7.4' r='1.7'/%3E%3Cellipse cx='8' cy='11.8' rx='2.6' ry='3'/%3E%3C/g%3E%3Cg stroke='%23d9483b' stroke-width='1' stroke-linecap='round'%3E%3Cpath d='M6.4 6.6 3 4.8M9.6 6.6 13 4.8M6.4 8 3 8.4M9.6 8 13 8.4M6.6 9.2 3.4 11.6M9.4 9.2 12.6 11.6M7.2 2.2 5.8 0.6M8.8 2.2 10.2 0.6'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
@@ -36,24 +36,41 @@
       <button class="btn toggle" data-phero="1" title="Nahrungsspuren (Taste P)">Futter</button>
       <button class="btn toggle" data-phero="2" title="Alarmspuren">Alarm</button>
     </div>
-    <div class="group">
-      <button id="btn-pip" class="btn toggle" title="Bild-in-Bild: andere Ebene beobachten (Taste B)">PiP</button>
-      <button id="btn-cinema" class="btn toggle" title="Kinomodus: springt zu Ereignissen (Taste C)">Kino</button>
-      <button id="btn-autojump" class="btn toggle" title="Bei Angriff automatisch zur bedrohten Ebene wechseln">Auto</button>
-      <button id="btn-front" class="btn toggle" title="Kamera folgt dem Schwerpunkt der Kaempfe (Taste K)">Front</button>
-      <button id="btn-research" class="btn toggle" title="Forschungsmenue: Evolution im Zeitraffer (Taste R)">Forsch.</button>
-      <button id="btn-stats" class="btn toggle" title="Stammbaum und Statistik (Taste T)">Stamm.</button>
-      <button id="btn-settings" class="btn toggle" title="Einstellungen und Spielstaende (Taste O)">Einst.</button>
-      <button id="btn-grid" class="btn toggle" title="Chunk-Raster einblenden (Taste G)">Raster</button>
-      <button id="btn-trans" class="btn toggle on" title="Ebenenuebergang animieren">Blende</button>
-      <button id="btn-legend" class="btn toggle on" title="Legende (Taste L)">Leg.</button>
-      <button id="btn-help" class="btn toggle" title="Tastenkuerzel (Taste H)">?</button>
+    <!--
+      Die Kopfzeile trug einmal zwanzig Schaltflaechen in einer Reihe. Was
+      man staendig braucht (Tempo, Ebene, Uhrzeit) steht weiter offen; alles
+      andere liegt jetzt in zwei Klappmenues. Die Tastenkuerzel aendern sich
+      dadurch nicht - wer sie kennt, merkt vom Umbau nichts.
+    -->
+    <div class="menu" id="menu-view">
+      <button class="btn menu-btn" aria-haspopup="true" aria-expanded="false">Ansicht &#9662;</button>
+      <div class="menu-pop">
+        <button id="btn-pip" class="btn toggle wide" title="Andere Ebene beobachten (B)">Bild-in-Bild</button>
+        <button id="btn-cinema" class="btn toggle wide" title="Springt zu Ereignissen (C)">Kinomodus</button>
+        <button id="btn-autojump" class="btn toggle wide" title="Bei Angriff zur bedrohten Ebene wechseln">Alarmsprung</button>
+        <button id="btn-front" class="btn toggle wide" title="Kamera folgt den Kaempfen (K)">Front folgen</button>
+        <button id="btn-legend" class="btn toggle wide on" title="Legende (L)">Legende</button>
+        <button id="btn-trans" class="btn toggle wide on" title="Ebenenuebergang animieren">Blende</button>
+        <button id="btn-grid" class="btn toggle wide" title="Chunk-Raster (G)">Chunk-Raster</button>
+      </div>
     </div>
-    <div class="group world-group">
-      <select id="mapselect" class="sel" title="Kartenvorlage"></select>
-      <input id="seedinput" class="inp" size="9" title="Seed der Welt" spellcheck="false">
-      <button id="btn-dice" class="btn" title="Zufaelligen Seed wuerfeln">⚄</button>
-      <button id="btn-newworld" class="btn" title="Welt mit diesen Einstellungen neu erzeugen">Neu</button>
+    <div class="menu" id="menu-game">
+      <button class="btn menu-btn" aria-haspopup="true" aria-expanded="false">Spiel &#9662;</button>
+      <div class="menu-pop">
+        <button id="btn-stats" class="btn toggle wide" title="Stammbaum und Statistik (T)">Statistik</button>
+        <button id="btn-research" class="btn toggle wide" title="Evolution im Zeitraffer (R)">Forschung</button>
+        <button id="btn-settings" class="btn toggle wide" title="Einstellungen und Spielstaende (O)">Einstellungen</button>
+        <button id="btn-help" class="btn toggle wide" title="Tastenkuerzel (H)">Tastenkuerzel</button>
+        <div class="menu-sep"></div>
+        <div class="menu-row">
+          <select id="mapselect" class="sel" title="Kartenvorlage"></select>
+        </div>
+        <div class="menu-row">
+          <input id="seedinput" class="inp" size="9" title="Seed der Welt" spellcheck="false">
+          <button id="btn-dice" class="btn" title="Zufaelligen Seed wuerfeln">&#9860;</button>
+        </div>
+        <button id="btn-newworld" class="btn wide" title="Welt mit diesen Einstellungen neu erzeugen">Neue Welt</button>
+      </div>
     </div>
     <div id="seedbox" class="seed" title="Version"></div>
   </header>
@@ -113,6 +130,9 @@
     <canvas id="minimap" width="168" height="168"></canvas>
   </section>
 
+  <!-- Vorratsleiste des gefuehrten Volkes; im Sandkasten ausgeblendet. -->
+  <div id="resources" hidden></div>
+
   <div id="pips"></div>
   <div id="toasts"></div>
 
@@ -131,9 +151,43 @@
   </div>
 </div>
 
+<!--
+  Startmenue. Liegt ueber allem und ist der erste Bildschirm. Der Inhalt
+  wird von js/ui/startmenu.js gefuellt; hier steht nur das Geruest, damit
+  beim Laden kein Aufblitzen entsteht.
+-->
+<div id="start" class="start" hidden>
+  <div class="start-bg"></div>
+  <div class="start-inner">
+    <div class="start-head">
+      <h1 class="start-title">Antarium</h1>
+      <div class="start-sub">Ein Insekten-Oekosystem, das sich selbst spielt &ndash; bis du eingreifst.</div>
+    </div>
+    <div id="start-modes" class="start-modes"></div>
+    <div class="start-world">
+      <label class="start-field">
+        <span>Karte</span>
+        <select id="start-map" class="sel"></select>
+      </label>
+      <label class="start-field">
+        <span>Seed</span>
+        <span class="start-seedrow">
+          <input id="start-seed" class="inp" spellcheck="false" autocomplete="off">
+          <button id="start-dice" class="btn" title="Zufaelligen Seed wuerfeln">&#9860;</button>
+        </span>
+      </label>
+    </div>
+    <div class="start-actions">
+      <button id="start-go" class="btn primary big">Spiel starten</button>
+      <button id="start-continue" class="btn big" hidden>Fortsetzen</button>
+    </div>
+    <div id="start-note" class="start-note"></div>
+  </div>
+</div>
+
 <div id="boot">
   <div class="boot-inner">
-    <div class="boot-title">Formicarium</div>
+    <div class="boot-title">Antarium</div>
     <div id="boot-msg">Lade PixiJS und erzeuge die Welt …</div>
   </div>
 </div>

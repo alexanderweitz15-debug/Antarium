@@ -11,12 +11,53 @@
  * Chromium-Pfad ueber CHROME_PATH.
  */
 
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+/**
+ * Playwright liegt je nach Installation als ES-Modul oder als CommonJS vor.
+ * Im zweiten Fall haengt alles unter default, und ein blosses Destrukturieren
+ * liefert undefined – die Pruefung starb dann mit "Cannot read properties of
+ * undefined (reading 'launch')", was nach einem Fehler im Spiel aussieht und
+ * keiner ist.
+ */
+const pw = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const chromium = pw.chromium || (pw.default && pw.default.chromium);
+if (!chromium) {
+  console.error('Playwright gefunden, aber kein chromium darin. '
+    + 'PLAYWRIGHT_MODULE zeigt auf: ' + (process.env.PLAYWRIGHT_MODULE || 'playwright'));
+  process.exit(2);
+}
 
-const URL = process.argv[2] || 'http://localhost:8123/index.html';
+/**
+ * Ohne Dateiname: "npx serve" leitet /index.html auf /index um und wirft
+ * dabei die Abfrage weg – ein ?skipmenu kam so nie an, und die Pruefung
+ * blieb am Startmenue haengen.
+ */
+const BASE = process.argv[2] || 'http://localhost:8123/';
+/**
+ * Das Startmenue haelt den Start an, bis ein Modus gewaehlt ist. Fuer die
+ * bestehenden Pruefungen wird es uebersprungen; das Menue selbst bekommt
+ * am Ende eine eigene Pruefung mit echtem Klick.
+ */
+const URL = BASE + (BASE.includes('?') ? '&' : '?') + 'skipmenu=1';
 const results = [];
 const check = (name, ok, info = '') => {
   results.push((ok ? 'OK   ' : 'FEHL ') + name + (info ? '  (' + info + ')' : ''));
+};
+
+/**
+ * Schalter, die in einem Klappmenue der Kopfzeile liegen, sind nicht
+ * sichtbar, solange das Menue zu ist. Statt im Test die Menuemechanik
+ * nachzubauen (und damit die Verpackung statt der Funktion zu pruefen),
+ * wird das Menue kurz geoeffnet und der Schalter direkt angesprochen.
+ */
+const pressMenuButton = async (pg, id) => {
+  await pg.evaluate((bid) => {
+    const b = document.getElementById(bid);
+    if (!b) throw new Error('Schalter fehlt: ' + bid);
+    const menu = b.closest('.menu');
+    if (menu) menu.classList.add('open');
+    b.click();
+    if (menu) menu.classList.remove('open');
+  }, id);
 };
 
 const launchOpts = { args: ['--no-sandbox'] };
@@ -117,7 +158,7 @@ const tp = await page.evaluate((t) => {
   const s = formicarium.camera.worldToScreen((t.tx + 0.5) * 4, (t.ty + 0.5) * 4);
   return { x: Math.round(s.x), y: Math.round(s.y) };
 }, target);
-const qBefore = await page.evaluate(() => formicarium.world.colonies.get(0).digQueue.length);
+const qBefore = await page.evaluate(() => formicarium.world.construction.queueLength(formicarium.world.colonies.get(0)));
 await page.evaluate(() => {
   document.querySelectorAll('#tools .tool').forEach((b) => {
     const label = b.querySelector('span:last-child');
@@ -127,7 +168,7 @@ await page.evaluate(() => {
 });
 await page.mouse.click(tp.x, tp.y);
 await page.waitForTimeout(300);
-const qAfter = await page.evaluate(() => formicarium.world.colonies.get(0).digQueue.length);
+const qAfter = await page.evaluate(() => formicarium.world.construction.queueLength(formicarium.world.colonies.get(0)));
 check('Bauauftrag-Werkzeug fuegt Auftraege hinzu', qAfter > qBefore, qBefore + ' -> ' + qAfter);
 
 const dugBefore = await page.evaluate(() => formicarium.world.colonies.get(0).dugTotal);
@@ -247,7 +288,7 @@ const crAfter = await page.evaluate(() => window.formicarium.world.creatures.cou
 check('Kreaturen-Werkzeug spawnt Tiere', crAfter > crBefore, (crAfter - crBefore) + ' Wolfsspinnen');
 
 // --- 11. Forschungsmenue ---------------------------------------------------
-await page.click('#btn-research');
+await pressMenuButton(page, 'btn-research');
 await page.waitForTimeout(600);
 const res = await page.evaluate(() => ({
   offen: !document.getElementById('panel-research').hidden,
@@ -292,7 +333,7 @@ await page.waitForTimeout(6000);
 const tickAfter = await page.evaluate(() => window.formicarium.world.tick);
 check('Schnelldurchlauf rechnet Ticks voraus', tickAfter - tickBefore > 1500,
   (tickAfter - tickBefore) + ' Ticks in 6 s');
-await page.click('#btn-research');
+await pressMenuButton(page, 'btn-research');
 
 // --- 12. Pheromon-Overlay --------------------------------------------------
 await page.evaluate(() => { window.formicarium.game.togglePhero(1); });
@@ -315,18 +356,24 @@ check('Brut existiert und schluepft', brood.brut > 0 || brood.geschluepft > 0,
   brood.brut + ' Brut, ' + brood.geschluepft + ' geschluepft');
 
 // --- 14. Stammbaum ---------------------------------------------------------
-await page.click('#btn-stats');
+await pressMenuButton(page, 'btn-stats');
 await page.waitForTimeout(800);
 const st = await page.evaluate(() => ({
   offen: !document.getElementById('panel-stats').hidden,
   zeilen: document.querySelectorAll('#stats .lin-row').length,
 }));
 check('Stammbaum zeigt alle Voelker', st.offen && st.zeilen >= 1, st.zeilen + ' Eintraege');
-await page.click('#btn-stats');
+await pressMenuButton(page, 'btn-stats');
 
 // --- 15. Kartenvorlage -----------------------------------------------------
+// Das Kartenfeld liegt im Klappmenue "Spiel" – erst oeffnen, dann waehlen.
+await page.evaluate(() => {
+  const sel = document.getElementById('mapselect');
+  const menu = sel.closest('.menu');
+  if (menu) menu.classList.add('open');
+});
 await page.selectOption('#mapselect', 'geroell');
-await page.click('#btn-newworld');
+await pressMenuButton(page, 'btn-newworld');
 await page.waitForFunction(() => window.__booted === true, { timeout: 30000 });
 await page.waitForTimeout(1200);
 const map = await page.evaluate(() => ({
@@ -436,7 +483,7 @@ check('Einstellungsfenster bietet Schalter und Spielstandknoepfe',
 const stand = await page.evaluate(() => {
   const f = window.formicarium;
   f.game.saveLocal();
-  const raw = localStorage.getItem('formicarium.save');
+  const raw = localStorage.getItem('antarium.save');
   const d = JSON.parse(raw);
   return { kb: Math.round(raw.length / 1024), tick: d.tick, version: d.saveVersion,
     ebenen: d.levels.length, voelker: d.colonies.length };
@@ -444,7 +491,7 @@ const stand = await page.evaluate(() => {
 check('Spielstand landet im Browserspeicher', stand.kb > 10 && stand.tick > 0
   && stand.version === 2 && stand.ebenen >= 2, JSON.stringify(stand));
 
-await page.evaluate(() => localStorage.setItem('formicarium.save.pending', '1'));
+await page.evaluate(() => localStorage.setItem('antarium.save.pending', '1'));
 await page.reload({ waitUntil: 'load' });
 await page.waitForFunction(() => window.__booted === true, { timeout: 30000 });
 await page.waitForTimeout(900);
@@ -568,6 +615,55 @@ const panel = await page.evaluate(() => ({
 }));
 check('Die Kolonieliste zeigt Charakter, Baustoffe und Bauwerke',
   panel.charakter > 0 && panel.baustoffe > 0 && panel.bauwerke > 0, JSON.stringify(panel));
+
+// --- Startmenue: Modus waehlen und starten ---------------------------------
+{
+  const p2 = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const err2 = [];
+  p2.on('pageerror', (e) => err2.push('pageerror: ' + e.message));
+  await p2.goto(BASE, { waitUntil: 'load' });
+  await p2.waitForSelector('#start:not([hidden])', { timeout: 15000 });
+
+  const karten = await p2.evaluate(() => [...document.querySelectorAll('#start-modes .mode-card')]
+    .map((c) => c.querySelector('.mode-name').textContent.trim()));
+  check('Startmenue bietet die Spielmodi an', karten.length >= 2, karten.join(', '));
+
+  const startetNicht = await p2.evaluate(() => window.__booted !== true);
+  check('Das Spiel startet erst nach der Wahl', startetNicht,
+    startetNicht ? 'wartet auf den Spieler' : 'lief schon los');
+
+  // Feldzug waehlen und starten
+  await p2.evaluate(() => {
+    const karten = [...document.querySelectorAll('#start-modes .mode-card')];
+    const f = karten.find((c) => c.querySelector('.mode-name').textContent.trim() === 'Feldzug');
+    (f || karten[1]).click();
+  });
+  await p2.click('#start-go');
+  await p2.waitForFunction(() => window.__booted === true, { timeout: 30000 });
+  await p2.waitForTimeout(900);
+
+  const modus = await p2.evaluate(() => window.antarium.world.mode);
+  check('Der gewaehlte Modus gilt in der Welt', modus === 'feldzug', String(modus));
+
+  const werkzeuge = await p2.evaluate(() =>
+    [...document.querySelectorAll('#tools .tool span:last-child')].map((b) => b.textContent.trim()));
+  const gott = ['Meteor', 'Seuche', 'Kolonie ausloeschen', 'Blitz'];
+  check('Im Feldzug fehlen die goettlichen Eingriffe',
+    werkzeuge.length > 0 && !gott.some((g) => werkzeuge.includes(g)),
+    werkzeuge.length + ' Werkzeuge: ' + werkzeuge.slice(0, 8).join(', '));
+  check('Im Feldzug gibt es den Grabduft',
+    werkzeuge.includes('Grabduft'), werkzeuge.includes('Grabduft') ? 'vorhanden' : 'fehlt');
+
+  const leiste = await p2.evaluate(() => {
+    const el = document.getElementById('resources');
+    return { da: el && !el.hidden, felder: el ? el.querySelectorAll('.res').length : 0 };
+  });
+  check('Im Feldzug zeigt eine Vorratsleiste den Bestand',
+    leiste.da && leiste.felder >= 4, leiste.felder + ' Felder');
+
+  check('Startmenue ohne Fehler in der Konsole', err2.length === 0, err2.slice(0, 2).join(' | '));
+  await p2.close();
+}
 
 console.log('\n' + results.join('\n'));
 // Netzfehler des CDN (Vendor-Fallback greift) sind kein Testfehler.

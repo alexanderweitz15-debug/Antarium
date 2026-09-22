@@ -12,6 +12,7 @@
 
 import {
   SIM, WORLD, CAMERA, TRANSITION, COLONY, MAP_PRESETS, mapPreset, CINEMA, STORAGE,
+  MODES, DEFAULT_MODE,
 } from './config.js';
 import { World } from './sim/world.js';
 import { LEVEL_KIND } from './sim/levels.js';
@@ -21,6 +22,8 @@ import { SpriteBank } from './render/sprites.js';
 import { Camera } from './render/camera.js';
 import { Renderer } from './render/renderer.js';
 import { Transition } from './render/transition.js';
+import { showStartMenu } from './ui/startmenu.js';
+import { ResourceBar } from './ui/resources.js';
 import { LevelNav } from './ui/levelNav.js';
 import { Legend } from './ui/legend.js';
 import { PerfOverlay } from './ui/perf.js';
@@ -32,7 +35,7 @@ import { Toolbar } from './ui/toolbar.js';
 import { ResearchPanel } from './ui/research.js';
 import { StatsPanel } from './ui/stats.js';
 import { AlertView } from './ui/alerts.js';
-import { SettingsPanel } from './ui/settings.js';
+import { SettingsPanel, readStored } from './ui/settings.js';
 import { Audio } from './ui/audio.js';
 import { clockString, PHASE_NAME } from './sim/daynight.js';
 import { Minimap } from './render/minimap.js';
@@ -72,9 +75,28 @@ window.addEventListener('unhandledrejection', (e) => { if (!window.__booted) boo
 // ---------------------------------------------------------------------------
 async function boot() {
   const params = new URLSearchParams(location.search);
-  const mapKey = params.get('map') || 'wiese';
+
+  /**
+   * ZUERST DAS STARTMENUE. Der Modus entscheidet, welche Werkzeuge es
+   * ueberhaupt gibt und ob der Spieler ein eigenes Volk fuehrt – das laesst
+   * sich nicht sinnvoll nachtraeglich umschalten. Ein "pending"-Stand
+   * (Laden aus den Einstellungen heraus) ueberspringt das Menue, sonst
+   * muesste man nach jedem Laden zweimal bestaetigen.
+   */
+  let pendingSave = false;
+  try { pendingSave = !!localStorage.getItem(STORAGE.SAVE + '.pending'); } catch { /* egal */ }
+
+  let wahl = null;
+  if (!pendingSave && !params.has('skipmenu')) {
+    wahl = await showStartMenu();
+  }
+
+  const mapKey = (wahl && wahl.mapKey) || params.get('map') || 'wiese';
   const preset = mapPreset(mapKey);
-  const seed = params.get('seed') || preset.seed || randomSeed();
+  const seed = (wahl && wahl.seed) || params.get('seed') || preset.seed || randomSeed();
+  const modeKey = (wahl && wahl.mode) || params.get('mode') || DEFAULT_MODE;
+  const mode = MODES[modeKey] || MODES[DEFAULT_MODE];
+  if (wahl && wahl.resume) pendingSave = true;
 
   // --- Welt ----------------------------------------------------------------
   /**
@@ -85,9 +107,9 @@ async function boot() {
   let world = null;
   let loadedFromSave = false;
   try {
-    if (localStorage.getItem(STORAGE.SAVE + '.pending')) {
+    if (pendingSave) {
       localStorage.removeItem(STORAGE.SAVE + '.pending');
-      const raw = localStorage.getItem(STORAGE.SAVE);
+      const raw = readStored(STORAGE.SAVE, STORAGE.SAVE_LEGACY);
       if (raw) {
         const res = World.fromSave(JSON.parse(raw));
         if (res.ok) { world = res.world; loadedFromSave = true; }
@@ -96,6 +118,17 @@ async function boot() {
     }
   } catch { world = null; }
   if (!world) world = new World(seed, preset.key).generate();
+  /**
+   * Der Modus haengt an der WELT, nicht an der Oberflaeche: er wandert
+   * damit in den Speicherstand und ein geladenes Spiel kommt mit denselben
+   * Regeln zurueck, unter denen es gespielt wurde.
+   */
+  if (!world.mode) world.mode = modeKey;
+  /**
+   * Im Feldzug fuehrt der Spieler das erste Volk. Es ist das, dessen Nest
+   * die Kamera beim Start anfliegt – alles andere waere verwirrend.
+   */
+  world.playerColonyId = mode.own ? 0 : -1;
 
   // --- Grafik --------------------------------------------------------------
   const sprites = await new SpriteBank().load();
@@ -103,11 +136,31 @@ async function boot() {
   const renderer = new Renderer(world, sprites, camera);
   await renderer.init($('stage'));
   for (const level of world.levels.levels) renderer.addLevel(level);
-  camera.attach(world.levels.surface);
-  // Start an einem Nesteingang, damit sofort etwas zu sehen ist.
+  /**
+   * WO DER BLICK ANFAENGT, HAENGT AM MODUS.
+   *
+   * Im Sandkasten schaut man von oben auf die Welt – man beobachtet ein
+   * Terrarium. Im Feldzug fuehrt man ein Volk, also faengt der Blick im
+   * eigenen Nest an. Das ist nicht nur Geschmack: der Grabduft, das
+   * wichtigste Mittel des Modus, gilt nur in Nest-Ebenen. Wer an der
+   * Oberflaeche startet, sieht fuenf Werkzeuge und keine Moeglichkeit zu
+   * graben – die Browserpruefung hat genau das gemeldet.
+   */
+  const startNest = mode.own && world.colonies.get(world.playerColonyId)
+    ? world.levels.get(world.colonies.get(world.playerColonyId).nestLevelIds[0])
+    : null;
+  const startLevel = startNest || world.levels.surface;
+  camera.attach(startLevel);
   const firstPortal = world.portals.portals[0];
-  if (firstPortal) camera.focusCell(firstPortal.ax, firstPortal.ay, CAMERA.DEFAULT_ZOOM);
-  renderer.setActive(world.levels.surface);
+  if (startNest && world.colonies.get(world.playerColonyId).layout) {
+    const q = world.colonies.get(world.playerColonyId).layout.queen;
+    camera.focusCell(q.x, q.y, CAMERA.DEFAULT_ZOOM);
+  } else if (firstPortal) {
+    // Start an einem Nesteingang, damit sofort etwas zu sehen ist.
+    camera.focusCell(firstPortal.ax, firstPortal.ay, CAMERA.DEFAULT_ZOOM);
+  }
+  world.levels.setActive(startLevel.id);
+  renderer.setActive(startLevel);
   const transition = new Transition(camera, renderer);
 
   // --- Zustand der Oberflaeche (UI) ---------------------------------------
@@ -292,7 +345,7 @@ async function boot() {
     /** Zuletzt abgelegten Stand laden. */
     loadLocal() {
       let raw = null;
-      try { raw = localStorage.getItem(STORAGE.SAVE); } catch { raw = null; }
+      raw = readStored(STORAGE.SAVE, STORAGE.SAVE_LEGACY);
       if (!raw) {
         bus.logEvent(CAT.SYS, 'Kein Spielstand im Browser vorhanden', { tick: world.tick });
         return;
@@ -310,7 +363,7 @@ async function boot() {
       const blob = new Blob([text], { type: 'application/json' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = 'formicarium-' + world.seed + '-' + world.tick + '.json';
+      a.download = 'antarium-' + world.seed + '-' + world.tick + '.json';
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 2000);
       bus.logEvent(CAT.SYS, 'Spielstand als Datei gespeichert', { tick: world.tick });
@@ -412,11 +465,18 @@ async function boot() {
       });
     },
     gotoSurface() { game.gotoLevel(world.levels.surface.id); },
-    /** Neue Welt mit den Einstellungen aus der Kopfzeile (Neuladen). */
+    /**
+     * Neue Welt mit den Einstellungen aus der Kopfzeile (Neuladen).
+     *
+     * Der MODUS wandert mit. Wer mitten im Feldzug eine neue Karte will,
+     * will einen neuen Feldzug – nicht noch einmal durch das Startmenue.
+     */
     newWorld(mapKeyIn, seedIn) {
       const p = new URLSearchParams();
       p.set('map', mapKeyIn);
       if (seedIn) p.set('seed', seedIn);
+      p.set('mode', world.mode || DEFAULT_MODE);
+      p.set('skipmenu', '1');
       location.search = p.toString();
     },
     /** Wird aufgerufen, wenn per Werkzeug eine Kolonie gegruendet wurde. */
@@ -465,6 +525,36 @@ async function boot() {
   const stats = new StatsPanel($('stats'), world, game, sprites);
   const alerts = new AlertView($('toasts'), world, game);
   const minimap = new Minimap($('minimap'), world, camera, game);
+  const resources = new ResourceBar($('resources'), world);
+
+  /**
+   * Klappmenues der Kopfzeile. Eines offen, alle anderen zu; ein Klick
+   * irgendwo sonst schliesst. Die Schalter darin sind dieselben Elemente
+   * mit denselben IDs wie vorher – die Tastenkuerzel merken vom Umbau
+   * nichts.
+   */
+  for (const menu of document.querySelectorAll('.menu')) {
+    const btn = menu.querySelector('.menu-btn');
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const auf = !menu.classList.contains('open');
+      for (const m of document.querySelectorAll('.menu.open')) {
+        m.classList.remove('open');
+        m.querySelector('.menu-btn').setAttribute('aria-expanded', 'false');
+      }
+      menu.classList.toggle('open', auf);
+      btn.setAttribute('aria-expanded', auf ? 'true' : 'false');
+    });
+    // Klicks im Menue duerfen es nicht schliessen, sonst kann man in der
+    // Ansicht nicht zwei Schalter hintereinander umlegen.
+    menu.querySelector('.menu-pop').addEventListener('click', (e) => e.stopPropagation());
+  }
+  document.addEventListener('click', () => {
+    for (const m of document.querySelectorAll('.menu.open')) {
+      m.classList.remove('open');
+      m.querySelector('.menu-btn').setAttribute('aria-expanded', 'false');
+    }
+  });
   const pip = new PipView(renderer, world, $('pips'), game);
   const audio = new Audio();
   const settings = new SettingsPanel($('settings'), game);
@@ -711,7 +801,24 @@ async function boot() {
     }
   }
 
+  /**
+   * Eine Nest-Ebene kann MITTEN IM SPIEL entstehen (World.expandNest gibt
+   * einem grossen Volk ein Stockwerk tiefer). Ohne diese Pruefung haette
+   * sie keine Chunk-Texturen und keinen Eintrag in der Ebenenleiste – die
+   * Ameisen waeren dort, aber unsichtbar.
+   */
+  let knownLevels = world.levels.levels.length;
+  function syncLevels() {
+    if (world.levels.levels.length === knownLevels) return;
+    knownLevels = world.levels.levels.length;
+    for (const level of world.levels.levels) renderer.addLevel(level);
+    levelNav.rebuild(world);
+    levelNav.update(world);
+    pip.refreshLevels();
+  }
+
   function renderFrame(alpha) {
+    syncLevels();
     renderer.frame(alpha);
     renderer.setSelection(inspector.selected, alpha);
   }
@@ -832,6 +939,7 @@ async function boot() {
       toolbar.syncGodMode();
       $('tool-level').textContent = world.levels.active.kind === 0 ? 'Oberflaeche' : 'Nest';
       colonyPanel.refresh();
+      resources.refresh();
       legend.refresh(world, camera.visibleCells(0));
       logView.render();
       inspector.refresh();
@@ -868,7 +976,7 @@ async function boot() {
   requestAnimationFrame(loop);
 
   // Fuer Konsolenexperimente erreichbar machen.
-  window.formicarium = { world, renderer, camera, game, sprites, state, pip };
+  window.antarium = window.formicarium = { world, renderer, camera, game, sprites, state, pip };
 }
 
 boot().catch((err) => {

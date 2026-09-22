@@ -176,9 +176,23 @@ function poolFromJSON(pool, data, cols) {
  * sie waeren nur Ballast und koennten nach dem Laden sogar widerspruechlich
  * zum tatsaechlichen Bestand sein.
  */
+/** Kennung im Speicherstand. */
+export const SAVE_FORMAT = 'antarium-save';
+/**
+ * Staende aus der Zeit vor der Umbenennung tragen noch die alte Kennung.
+ * Sie werden weiter angenommen – der Inhalt hat sich nicht geaendert.
+ */
+export const SAVE_FORMAT_LEGACY = 'formicarium-save';
+
+/** Ist das ueberhaupt ein Stand dieses Spiels? */
+export function isSaveFile(data) {
+  return !!data && (data.format === SAVE_FORMAT || data.format === SAVE_FORMAT_LEGACY);
+}
+
 const COLONY_DERIVED = new Set([
   // Diese Zaehler entstehen in JEDEM Tick neu (rebuildBuckets, brood.recount).
-  'population', 'populationByLevel', 'total', 'diggers', 'nurses', 'foragers',
+  'population', 'populationByLevel', 'total', 'diggers', 'diggersByLevel',
+  'nurses', 'foragers',
   'broodCount', 'baseName', 'color', 'id',
 ]);
 /**
@@ -268,7 +282,7 @@ function decodeColony(c, data) {
 export function saveWorld(world) {
   const levels = world.levels.levels.map((l) => ({
     id: l.id, kind: l.kind, w: l.w, h: l.h, name: l.name,
-    colonyId: l.colonyId, abandoned: l.abandoned,
+    colonyId: l.colonyId, abandoned: l.abandoned, depth: l.depth,
     airVersion: l.airVersion, airCount: l.airCount,
     cells: packGrid(l.cells),
     meta: packGrid(l.meta),
@@ -281,6 +295,7 @@ export function saveWorld(world) {
     id: p.id, colonyId: p.colonyId,
     aLevelId: p.aLevelId, ax: p.ax, ay: p.ay,
     bLevelId: p.bLevelId, bx: p.bx, by: p.by,
+    upLevelId: p.upLevelId,
     closed: !!p.closed, pluggedBy: p.pluggedBy !== undefined ? p.pluggedBy : -1,
   }));
 
@@ -313,13 +328,25 @@ export function saveWorld(world) {
     foodReg.push({ levelId, count: r.count, list: rawEncode(r.list, r.count) });
   }
 
+  /**
+   * Grabfelder. Warum nur diese fuenf Prozent der Distanzfelder im Stand
+   * landen, steht bei FieldSet.digToJSON.
+   */
+  const digFields = [];
+  for (const [levelId, fs] of world.fields) {
+    digFields.push({ levelId, ...fs.digToJSON(rawEncode) });
+  }
+
   return {
-    format: 'formicarium-save',
+    format: SAVE_FORMAT,
     saveVersion: SAVE_VERSION,
     gameVersion: VERSION,
     savedAt: new Date().toISOString(),
     seed: world.seed,
     preset: world.preset.key,
+    /** Spielmodus: er bestimmt die Regeln und gehoert deshalb in den Stand. */
+    mode: world.mode || null,
+    playerColonyId: world.playerColonyId !== undefined ? world.playerColonyId : -1,
     tick: world.tick,
     biasMode: world.biasMode,
     godMode: world.godMode,
@@ -330,7 +357,9 @@ export function saveWorld(world) {
     rng: { sim: world.rngSim.getState(), gen: world.rngGen.getState() },
     lineage: world.lineage.map((e) => ({ ...e })),
     seenCastes: Array.from(world.seenCastes),
-    levels, portals, colonies, phero, foodReg,
+    levels, portals, colonies, phero, foodReg, digFields,
+    /** Grabduft des Spielers je Nest-Ebene (siehe digscent.js). */
+    digScent: world.digScent.toJSON(rawEncode),
     /**
      * Die Einsturz-Warteschlange gehoert dazu: sie wird ueber mehrere Ticks
      * abgearbeitet. Fehlt sie, faengt ein geladener Stand ohne die
@@ -339,6 +368,8 @@ export function saveWorld(world) {
     stability: { queue: world.stability.queue.map((e) => ({ ...e })),
       collapses: world.stability.collapses },
     combatKills: world.combat.kills,
+    /** Wer gegen wen kaempft (siehe combat.js, Combat.pairs). */
+    combatPairs: world.combat.toJSON(),
     /** Phase 11: Beziehungen zwischen den Voelkern und alle Bauwerke. */
     diplomacy: world.diplomacy.toJSON(),
     structures: world.structures.toJSON(),
@@ -362,8 +393,8 @@ export function saveWorld(world) {
  * @returns {{ok:boolean, reason?:string}}
  */
 export function loadWorld(world, data, deps) {
-  if (!data || data.format !== 'formicarium-save') {
-    return { ok: false, reason: 'Keine Formicarium-Speicherdatei' };
+  if (!data || !isSaveFile(data)) {
+    return { ok: false, reason: 'Keine Antarium-Speicherdatei' };
   }
   if (data.saveVersion !== SAVE_VERSION) {
     return { ok: false, reason: 'Speicherstand Version ' + data.saveVersion
@@ -391,6 +422,7 @@ export function loadWorld(world, data, deps) {
     world.levels.add(lvl);
     world.ants.registerLevel(lvl.id);
     world.creatures.registerLevel(lvl.id);
+    if (lvl.kind === LEVEL_KIND.NEST) world.digScent.registerLevel(lvl);
     if (lvl.kind === LEVEL_KIND.NEST) world.fields.set(lvl.id, new FieldSet(lvl));
   }
   world.levels.activeId = data.activeLevelId;
@@ -404,6 +436,7 @@ export function loadWorld(world, data, deps) {
       colonyId: pd.colonyId,
       aLevelId: pd.aLevelId, ax: pd.ax, ay: pd.ay,
       bLevelId: pd.bLevelId, bx: pd.bx, by: pd.by,
+      upLevelId: pd.upLevelId,
     });
     p.closed = pd.closed;
     p.pluggedBy = pd.pluggedBy;
@@ -452,6 +485,8 @@ export function loadWorld(world, data, deps) {
 
   // --- Restlicher Weltzustand --------------------------------------------
   world.tick = data.tick;
+  if (data.mode) world.mode = data.mode;
+  if (data.playerColonyId !== undefined) world.playerColonyId = data.playerColonyId;
   world.biasMode = data.biasMode;
   world.godMode = data.godMode;
   world.energy = data.energy;
@@ -479,6 +514,7 @@ export function loadWorld(world, data, deps) {
     world.stability.collapses = data.stability.collapses;
   }
   if (data.combatKills !== undefined) world.combat.kills = data.combatKills;
+  world.combat.fromJSON(data.combatPairs);
   world.diplomacy.fromJSON(data.diplomacy);
   // Bauwerke NACH den Kolonien, weil create() deren Boni neu zusammenrechnet
   world.structures.fromJSON(data.structures);
@@ -492,9 +528,20 @@ export function loadWorld(world, data, deps) {
   for (const colony of world.colonies.colonies) {
     for (const levelId of colony.nestLevelIds) {
       const fs = world.fields.get(levelId);
-      if (fs) fs.update(colony, world.portals, fullBudget);
+      if (fs) fs.update(colony, world.portals, fullBudget, world.construction.peek(colony, levelId));
     }
   }
+  /**
+   * Das Grabfeld ZULETZT, nach dem Vollaufbau: es wird nicht neu gerechnet,
+   * sondern genau so wiederhergestellt, wie es beim Speichern stand – samt
+   * seiner Rueckstaendigkeit. Sonst ist der geladene Stand frischer als der
+   * laufende und weicht ab dem ersten Tick ab.
+   */
+  for (const fd of data.digFields || []) {
+    const fs = world.fields.get(fd.levelId);
+    if (fs) fs.digFromJSON(fd, rawDecodeInto);
+  }
+  world.digScent.fromJSON(data.digScent, rawDecodeInto);
   world.creatures.rebuildBuckets(world.levels);
   world.brood.recount(world.colonies);
 

@@ -933,6 +933,68 @@ woanders.
 
 ---
 
+## 8r. Mehrere Stockwerke je Volk (Phase 11)
+
+Ein Volk beginnt mit einer Nest-Ebene. Wird es gross und geht ihm der
+Platz aus, graebt es sich ein **Stockwerk tiefer**: `World.expandNest`
+legt eine neue Nest-Ebene an und verbindet sie mit einem Abstiegsschacht.
+
+### Der Schacht ist ein gewoehnliches Portal
+
+Nest zu Nest statt Oberflaeche zu Nest. Damit gelten Kapazitaet,
+Uebergangszeit und die Engstellenregel im Kampf automatisch auch fuer
+ihn. Ein zweiter Verbindungsmechanismus waere nur eine zweite
+Fehlerquelle gewesen.
+
+Jedes Portal merkt sich in `upLevelId`, welche Seite die obere ist. Das
+Ausgangsfeld einer Ebene nimmt nur Portale auf, die von dort **nach
+oben** fuehren – sonst bietet es einer Sammlerin auf einer mittleren
+Ebene den Abstiegsschacht als Weg ins Freie an.
+
+### Grabzustand je Ebene
+
+`colony.digByLevel` bildet Ebenen-ID auf den Grabzustand ab
+(`queue`, `meta`, `target`, `active`, `progress`, `goals`, `key`,
+`descend`, `stall`). Bis dahin gab es **eine** Warteschlange am Volk;
+mit zwei Ebenen wertete `Construction.update` dieselbe Liste gegen die
+Zellen der falschen Ebene aus und raeumte deren Auftraege weg.
+
+Zugriff ueber `Construction.stateFor(colony, levelId)` (legt an) bzw.
+`peek` (legt nicht an, fuer heisse Pfade in `ants.js`).
+
+### Wie ein neues Stockwerk besiedelt wird
+
+Ameisen benutzen ein Portal nur, wenn sie darauf treten – tief im Bau
+kommt zufaellig niemand vorbei. Deshalb gibt es einen **Sog**:
+
+1. Neue Grabprojekte werden nur noch auf der **untersten** Ebene geplant
+   (`_isDeepest`). Ein Nest waechst nach unten.
+2. Wartet unten Arbeit und ist dort weniger als `EXPAND_STAFF_SHARE` des
+   Volkes, zeigt das Grabfeld der oberen Ebene auf den Schacht statt auf
+   die eigene Baustelle (`_descendTarget`). Wer schon an der Tunnelbrust
+   steht, graebt weiter; alle anderen laufen hinunter.
+3. `_tryEnter` laesst Ameisen im Zustand DIG durch das **eigene** Tor.
+
+Die Abschaltschwelle liegt um `EXPAND_STAFF_HYST` hoeher als die
+Einschaltschwelle. Ohne diese Hysterese kippte der Sog im Sekundentakt.
+
+### Gefundene Fehler
+
+| Befund | Ursache | Loesung |
+|---|---|---|
+| Neues Stockwerk blieb bei null Ameisen | Sog hing an "obere Warteschlange leer" – sie wurde es nie | Sog haengt an der Besetzung unten |
+| Volk grub in 8000 Ticks keine Zelle | Sog kippte staendig, jeder Umschlag setzte `progress` auf 0 | Baustelle bleibt stehen, nur das Feld wandert; dazu Hysterese |
+| 17 Auftraege kreisten ewig | `planProject` ueberspringt Fels im Zugangsgang stillschweigend, die Kammer haengt in der Luft | nach einem vollen Umlauf wird der Auftrag verworfen (`stall`) |
+| Volk grub weiter trotz genug Platz | `needsSpace` mass nur EINE Ebene | `airOf(colony)` summiert alle Ebenen |
+| Ausbau loeste nie aus | Festpreis von 90 Zucker; ein Volk mit 700 Ameisen haelt sein Lager dauerhaft bei etwa 60 | Preis gestrichen, die Grabarbeit ist der Preis |
+
+### Grenzen
+
+`LIMITS.MAX_NEST_LEVELS` = 20, `DIG.EXPAND_MAX_PER_COLONY` = 3. Jede
+Ebene kostet rund ein Megabyte (Gitter, fuenf Distanzfelder, Chunk-
+Texturen). Gemessen im schlimmsten Fall – acht Voelker, 20 Nest-Ebenen,
+4296 Ameisen: **7.85 ms/Tick**, 23.5 % des Budgets von 33.3 ms.
+
 ## 8q. Massentest (test/fuzz.mjs)
 
 ```bash
@@ -1151,11 +1213,12 @@ Speicherstand 2000 Ticks lang bitgenau wie das Original weiter
 | 4 | Navigation, Minimap, Bild-in-Bild, Kinomodus, Front, Legenden-Hervorhebung | **fertig** |
 | 5 | Krieg, Bedrohungsstufen, Raubzuege, Kampfalarme | **fertig** |
 | 6 | Befestigungen, Stabilitaet, Einstuerze, Erdbeben | **fertig** (Reparatur ueber Baupheromon offen) |
-| 7 | Raeuber, Netze, Trichter, Raeuber-Beute-Dynamik, 11 Arten | **fertig** (Blattlaus-Bewachung offen) |
+| 7 | Raeuber, Netze, Trichter, Raeuber-Beute-Dynamik, 11 Arten | **fertig** |
 | 8 | Evolution, Genom, Mutation, Hochzeitsflug, Kasten | **fertig** (Gen-Verlaufskurven offen) |
 | 9 | Goettliche Eingriffe (24 Stueck), Energie-Modus, Forschungsmenue | **fertig** |
 | 10 | Tag/Nacht, Teilchen, Ton, Speichern/Laden, Einstellungen, Balancing | **fertig** |
 | 11 | Eigenschaften, Diplomatie und Kriegsduft, Materialien, Bauwerke, Forschung, Massentest | **fertig** |
+| 11+ | Blattlaus-Bewachung, Buendnisse mit Wirkung, mehrere Stockwerke je Volk | **fertig** |
 
 ### Geprueft
 

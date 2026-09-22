@@ -41,6 +41,64 @@ export class Combat {
     this.world = world;
     this.kills = 0;
     this._near = { id: -1, d: 0 };
+    /**
+     * WER KAEMPFT GEGEN WEN. Bis dahin gab es nur eine Gesamtzahl toter
+     * Ameisen – man sah, DASS gekaempft wird, nie zwischen wem. Hier steht
+     * je Paar von Voelkern, wie oft zugeschlagen wurde, wie viele auf
+     * welcher Seite gefallen sind und wann zuletzt.
+     *
+     * Schluessel ist "kleinereId:groessereId", damit ein Paar nur einmal
+     * vorkommt. tote[0] gehoert zur kleineren Id.
+     * @type {Map<string, {hits:number, tote:number[], zuletzt:number, ort:number[]}>}
+     */
+    this.pairs = new Map();
+  }
+
+  /** Eintrag fuer ein Paar von Voelkern (wird bei Bedarf angelegt). */
+  pair(a, b) {
+    if (a === b || a < 0 || b < 0) return null;
+    const key = a < b ? a + ':' + b : b + ':' + a;
+    let e = this.pairs.get(key);
+    if (!e) {
+      e = { hits: 0, tote: [0, 0], zuletzt: -1, ort: [-1, -1, -1] };
+      this.pairs.set(key, e);
+    }
+    return e;
+  }
+
+  /** Alle Paare, die in den letzten Ticks wirklich gekaempft haben. */
+  activePairs(tick, within = COMBAT.PAIR_RECENT) {
+    const out = [];
+    for (const [key, e] of this.pairs) {
+      if (e.zuletzt < 0 || tick - e.zuletzt > within) continue;
+      const [a, b] = key.split(':').map(Number);
+      out.push({ a, b, ...e });
+    }
+    out.sort((p, q) => q.zuletzt - p.zuletzt);
+    return out;
+  }
+
+  /** Voelker aufraeumen, die es nicht mehr gibt. */
+  forgetColony(id) {
+    for (const key of [...this.pairs.keys()]) {
+      const [a, b] = key.split(':').map(Number);
+      if (a === id || b === id) this.pairs.delete(key);
+    }
+  }
+
+  toJSON() {
+    const out = [];
+    for (const [key, e] of this.pairs) {
+      out.push([key, e.hits, e.tote[0], e.tote[1], e.zuletzt, e.ort[0], e.ort[1], e.ort[2]]);
+    }
+    return out;
+  }
+
+  fromJSON(data) {
+    this.pairs.clear();
+    for (const r of data || []) {
+      this.pairs.set(r[0], { hits: r[1], tote: [r[2], r[3]], zuletzt: r[4], ort: [r[5], r[6], r[7]] });
+    }
   }
 
   // =========================================================================
@@ -69,7 +127,8 @@ export class Combat {
        * genau das ist beim ersten Versuch passiert: 37 Kaempferinnen
        * unterwegs, null im gegnerischen Bau.
        */
-      const onMission = st === ANT_STATE.RAID || st === ANT_STATE.LOOT;
+      const onMission = st === ANT_STATE.RAID || st === ANT_STATE.LOOT
+        || st === ANT_STATE.AID;
 
       const enemy = this._findEnemy(ants, level, i);
       if (enemy < 0) {
@@ -114,6 +173,25 @@ export class Combat {
       const dmg = this._damage(ants, ctx, i, enemy, level);
       ants.hp[enemy] -= dmg;
 
+      /**
+       * Buchfuehrung und Sichtbarkeit. Ein Treffer ist der kleinste
+       * Baustein eines Krieges; erst wenn er gezaehlt und gezeigt wird,
+       * kann man einem Kampf zusehen statt nur seine Leichen zu finden.
+       * Die Funken sind gedrosselt – bei fuenfhundert Kaempfenden waere
+       * ein Teilchen je Treffer und Tick nur noch ein roter Nebel.
+       */
+      const eintrag = this.pair(ants.colony[i], ants.colony[enemy]);
+      if (eintrag) {
+        eintrag.hits++;
+        eintrag.zuletzt = ctx.tick;
+        eintrag.ort[0] = level.id;
+        eintrag.ort[1] = ants.x[i] | 0;
+        eintrag.ort[2] = ants.y[i] | 0;
+      }
+      if ((i + ctx.tick) % COMBAT.HIT_FX_EVERY === 0) {
+        this.world.emitFx(FX.GORE, level.id, ants.x[enemy] | 0, ants.y[enemy] | 0, 1);
+      }
+
       if (phero && level.kind === LEVEL_KIND.SURFACE) {
         phero.deposit(ants.colony[i], PH.ALARM, ants.x[i] | 0, ants.y[i] | 0, PHERO.DEPOSIT.ALARM);
       }
@@ -148,11 +226,14 @@ export class Combat {
   /** Naechste feindliche Ameise in Sichtweite. */
   _findEnemy(ants, level, i) {
     const cid = ants.colony[i];
+    const dip = this.world.diplomacy;
     const x = ants.x[i], y = ants.y[i];
     let best = -1, bestD = COMBAT.SIGHT * COMBAT.SIGHT;
     level.spatial.query(x, y, COMBAT.SIGHT, (id) => {
       if (id === i || !ants.alive[id]) return;
       if (ants.colony[id] === cid) return;
+      // Verbuendete sind keine Feinde – auch nicht im Gedraenge am Eingang
+      if (dip.allied(cid, ants.colony[id])) return;
       if (ants.state[id] === ANT_STATE.TRANSIT) return;
       const dx = ants.x[id] - x, dy = ants.y[id] - y;
       const d = dx * dx + dy * dy;
@@ -173,7 +254,14 @@ export class Combat {
     if (bits & FLAG.MEIDET_KAMPF) return colony.threat >= 2;
     const caste = ants.caste[i];
     if (caste === CASTE.SOLDIER || caste === CASTE.ARMOR || caste === CASTE.TITAN) return true;
-    if (ants.state[i] === ANT_STATE.RAID || ants.state[i] === ANT_STATE.LOOT) return true;
+    /**
+     * Wer unterwegs ist, um zu kaempfen, kaempft auch. Ohne AID in dieser
+     * Liste standen Helferinnen untaetig vor dem Tor des Verbuendeten und
+     * sahen zu – die Grundregel laesst Arbeiterinnen nur bei EIGENER
+     * Bedrohung zuschlagen, und die lag bei null.
+     */
+    if (ants.state[i] === ANT_STATE.RAID || ants.state[i] === ANT_STATE.LOOT
+        || ants.state[i] === ANT_STATE.AID) return true;
     if (!colony) return false;
     if (level.kind === LEVEL_KIND.NEST) return true;      // im eigenen Nest immer
     const aggr = colony.genome ? colony.genome.aggressivitaet : 0.5;
@@ -249,7 +337,13 @@ export class Combat {
         ctx.world.queenDied(vColony, level, ants.x[victim], ants.y[victim]);
       }
     }
-    if (killerColony) killerColony.kills = (killerColony.kills || 0) + 1;
+    if (killerColony) {
+      killerColony.kills = (killerColony.kills || 0) + 1;
+      const opfer = ants.colony[victim];
+      const e = this.pair(killerColony.id, opfer);
+      // tote[0] gehoert zur kleineren Id – das Opfer zaehlt auf SEINER Seite.
+      if (e) e.tote[opfer < killerColony.id ? 0 : 1]++;
+    }
     // Feindliche Tote sind Protein
     if (ctx.food && level.kind === LEVEL_KIND.SURFACE) {
       ctx.food.dropCarrion(level, ants.x[victim] | 0, ants.y[victim] | 0,

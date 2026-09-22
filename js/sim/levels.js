@@ -22,7 +22,7 @@ export const LEVEL_KIND = {
 
 export class Level {
   /**
-   * @param {{kind:number, w:number, h:number, name:string, colonyId?:number}} opts
+   * @param {{kind:number, w:number, h:number, name:string, colonyId?:number, depth?:number}} opts
    */
   constructor(opts) {
     /**
@@ -36,6 +36,13 @@ export class Level {
     this.h = opts.h;
     this.name = opts.name;
     this.colonyId = opts.colonyId !== undefined ? opts.colonyId : -1;
+    /**
+     * Stockwerk: 0 = Oberflaeche und erste Nest-Ebene, 1 = eine Ebene
+     * darunter usw. Daraus leitet sich ab, welches Portal einer Ebene
+     * NACH OBEN fuehrt – ohne das wuerde das Ausgangsfeld einer mittleren
+     * Ebene auch den Abstiegsschacht als "Ausgang" anbieten.
+     */
+    this.depth = opts.depth !== undefined ? opts.depth : 0;
     /** Verlassenes Nest (Phase 5+): bleibt simuliert, ist aber herrenlos. */
     this.abandoned = false;
 

@@ -87,7 +87,7 @@ export class PerfOverlay {
       + world.portals.portals.reduce((s, p) => s + p.inTransit, 0)
       + ', Durchgaenge ' + world.totalPassages);
     L.push('  Gegraben    ' + world.totalDug + ' Zellen, offene Auftraege '
-      + world.colonies.colonies.reduce((s, c) => s + (c.digQueue ? c.digQueue.length : 0), 0));
+      + world.colonies.colonies.reduce((s, c) => s + world.construction.queueLength(c), 0));
     L.push('');
     L.push('PixiJS ' + PIXI_VERSION + ' (' + pixiSource + ')   Seed "' + world.seed + '"');
 

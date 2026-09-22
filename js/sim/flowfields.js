@@ -148,12 +148,64 @@ export class FieldSet {
   markDigDirty() { this.dig.valid = false; this.dig.airVersion = -1; }
 
   /**
+   * Das Grabfeld fuer den Speicherstand.
+   *
+   * Nur DIESES Feld wird gespeichert. Die vier anderen haengen allein an
+   * level.airVersion und werden vom Budget immer eingeholt, bevor eine
+   * Ameise sie liest – gemessen ueber sechs Feldsaetze: null veraltete
+   * Eingangs-, Vorrats-, Brut- und Fluchtfelder. Das Grabfeld dagegen
+   * wechselt sein ZIEL mit jeder fertigen Zelle und hinkt dem Budget
+   * regelmaessig hinterher (drei von sechs mit veralteter Gitterfassung,
+   * zwei mit veraltetem Ziel). Wird es beim Laden einfach neu gerechnet,
+   * ist es FRISCHER als im laufenden Spiel – und der geladene Stand lief
+   * ab dem ersten Tick auseinander.
+   *
+   * Gespeichert wird duenn besetzt: nur erreichbare Zellen. Eine
+   * Nest-Ebene ist fast ganz Fels, es sind ein paar hundert Werte.
+   */
+  digToJSON(encode) {
+    const d = this.dig;
+    const n = d.dist.length;
+    let count = 0;
+    for (let i = 0; i < n; i++) if (d.dist[i] !== UNREACHABLE) count++;
+    const idx = new Int32Array(count);
+    const val = new Uint16Array(count);
+    let k = 0;
+    for (let i = 0; i < n; i++) {
+      if (d.dist[i] === UNREACHABLE) continue;
+      idx[k] = i; val[k] = d.dist[i]; k++;
+    }
+    return {
+      airVersion: d.airVersion, goalKey: d.goalKey, valid: !!d.valid,
+      count, idx: encode(idx, count), val: encode(val, count),
+    };
+  }
+
+  /** Gegenstueck zu digToJSON. */
+  digFromJSON(data, decodeInto) {
+    if (!data) return;
+    const d = this.dig;
+    d.dist.fill(UNREACHABLE);
+    if (data.count > 0) {
+      const idx = new Int32Array(data.count);
+      const val = new Uint16Array(data.count);
+      decodeInto(data.idx, idx, data.count);
+      decodeInto(data.val, val, data.count);
+      for (let k = 0; k < data.count; k++) d.dist[idx[k]] = val[k];
+    }
+    d.airVersion = data.airVersion;
+    d.goalKey = data.goalKey;
+    d.valid = !!data.valid;
+  }
+
+  /**
    * Alle Felder auf Stand bringen.
    * @param {object} colony
    * @param {import('./portals.js').PortalSystem} portals
    * @param {{left:number}} budget gemeinsames Restbudget des Ticks
+   * @param {object} [dig] Grabzustand DIESER Ebene (construction.stateFor)
    */
-  update(colony, portals, budget) {
+  update(colony, portals, budget, dig) {
     const level = this.level;
     const av = level.airVersion;
 
@@ -161,6 +213,10 @@ export class FieldSet {
       const g = this._goals;
       g.length = 0;
       for (const p of portals.ofColony(colony.id)) {
+        // Nur Portale, die von HIER nach oben fuehren. Der eigene
+        // Abstiegsschacht ist kein Ausgang, sonst laufen Sammlerinnen
+        // einer mittleren Ebene nach unten statt ans Tageslicht.
+        if (p.upLevelId === level.id) continue;
         const pos = p.on(level.id);
         if (pos) g.push(pos.y * level.w + pos.x);
       }
@@ -169,9 +225,9 @@ export class FieldSet {
       budget.left--;
     }
 
-    const digKey = colony.digKey || '';
+    const digKey = dig ? dig.key : '';
     if (budget.left > 0 && (this.dig.airVersion !== av || this.dig.goalKey !== digKey || !this.dig.valid)) {
-      this.dig.compute(level, colony.digGoals || []);
+      this.dig.compute(level, dig ? dig.goals : []);
       this.dig.airVersion = av;
       this.dig.goalKey = digKey;
       budget.left--;

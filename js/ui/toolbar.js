@@ -11,7 +11,7 @@
  * die Simulation die einzige Stelle, die Weltzustand veraendert.
  */
 
-import { TOOLS, CASTE_STATS, FOOD, GODMODE } from '../config.js';
+import { TOOLS, CASTE_STATS, FOOD, GODMODE, MODES, DEFAULT_MODE } from '../config.js';
 import { LEVEL_KIND } from '../sim/levels.js';
 import { SURFACE_CELL, SURFACE_CELL_DEFS } from '../sim/surface.js';
 import { NEST_CELL, NEST_CELL_DEFS, CHAMBER, CHAMBER_DEFS } from '../sim/nest.js';
@@ -192,11 +192,31 @@ export class Toolbar {
     if (out) out.textContent = String(this.brush);
   }
 
+  /** Der geltende Spielmodus. */
+  get mode() { return MODES[this.world.mode] || MODES[DEFAULT_MODE]; }
+
+  /**
+   * Darf dieses Werkzeug im aktuellen Modus benutzt werden?
+   *
+   * Werkzeuge ohne Eingriff (Zeiger, Pinsel, Einheiten setzen) sind
+   * Sandkasten-Mittel und im Feldzug ebenfalls aus: wer Ameisen aus dem
+   * Nichts setzen kann, muss nicht wirtschaften.
+   */
+  _erlaubt(t) {
+    const m = this.mode;
+    if (m.tools === null) return true;
+    if (t.kind === 'select') return true;                 // Zeiger immer
+    if (t.kind === 'god') return m.tools.includes(t.intervention);
+    if (t.kind === 'order') return true;                  // Bauauftraege
+    return false;
+  }
+
   /** Leiste neu aufbauen, wenn sich Ebene oder Kolonien geaendert haben. */
   refresh() {
     const level = this.world.levels.active;
     const where = level.kind === LEVEL_KIND.SURFACE ? 'surface' : 'nest';
-    const sig = where + '|' + this.world.colonies.colonies.map((c) => c.id).join(',');
+    const sig = where + '|' + (this.world.mode || '') + '|' + this.world.colonies.colonies
+      .map((c) => c.id + (c.alive ? 'L' : 'T')).join(',');
     if (sig === this.signature) { this._markActive(); return; }
     this.signature = sig;
 
@@ -206,7 +226,15 @@ export class Toolbar {
     this.el.textContent = '';
     this._buttons.clear();
 
-    const tools = TOOL_DEFS.filter((t) => t.where === 'both' || t.where === where);
+    /**
+     * MODUSFILTER. Im Feldzug fuehrt der Spieler ein Volk und hat nur
+     * Mittel, die eine Koenigin wirklich haette. Der Filter sitzt hier und
+     * nicht in TOOL_DEFS, weil ein Modus die Werkzeuge AUSWAEHLT und nicht
+     * neu erfindet: dieselbe Tabelle, andere Teilmenge.
+     */
+    const tools = TOOL_DEFS
+      .filter((t) => t.where === 'both' || t.where === where)
+      .filter((t) => this._erlaubt(t));
     const groups = [
       ['Allgemein', tools.filter((t) => t.kind === 'select' || t.kind === 'erase'
         || t.kind === 'kill')],
@@ -447,7 +475,16 @@ export class Toolbar {
     box.innerHTML = '<h3>Kolonie</h3>';
     const row = document.createElement('div');
     row.className = 'tool-row wrap';
-    for (const c of this.world.colonies.colonies) {
+    /**
+     * Ein ausgestorbenes Volk ist kein Ziel: ein Segen, eine Seuche oder
+     * ein Kriegsduft darauf sind wirkungslos, die Schaltflaeche also eine
+     * Falle. Ist gerade eines gewaehlt, springt die Auswahl weiter.
+     */
+    const lebend = this.world.colonies.colonies.filter((c) => c.alive);
+    if (lebend.length && !lebend.some((c) => c.id === this.colonyId)) {
+      this.colonyId = lebend[0].id;
+    }
+    for (const c of lebend) {
       const b = document.createElement('button');
       b.className = 'swatch-btn' + (c.id === this.colonyId ? ' on' : '');
       b.style.background = c.colorCss;
